@@ -1,0 +1,14 @@
+# Core ML / PyTorch
+torch>=2.2.0
+torchvision>=0.17.0
+
+# HuggingFace ecosystem
+transformers>=4.38.0
+datasets>=2.18.0
+
+# CoreML conversion (Phase 3+)
+coremltools>=8.0
+
+# Utilities
+numpy>=1.26.0
+tqdm>=4.66.0
