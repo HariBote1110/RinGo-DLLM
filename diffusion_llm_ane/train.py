@@ -186,10 +186,10 @@ def train() -> None:
     use_amp = (not args.no_amp) and (device.type == "cuda")
     if use_amp:
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        scaler = torch.cuda.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+        scaler = torch.amp.GradScaler("cuda", enabled=(amp_dtype == torch.float16))
     else:
         amp_dtype = torch.float32
-        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
     print(f"AMP: {'enabled (' + str(amp_dtype) + ')' if use_amp else 'disabled'}")
 
     # ── Notifier ──
