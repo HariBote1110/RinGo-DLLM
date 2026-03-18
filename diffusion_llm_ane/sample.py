@@ -160,6 +160,9 @@ def sample(
         print("No [MASK] tokens found in prompt — returning as-is.")
         return x_t
 
+    # Number of tokens that are already visible (prompt context)
+    initial_unmasked = int((x_t != config.mask_token_id).sum().item())
+
     # Evenly space unmasking across `n_steps` denoising steps
     for step in range(n_steps, 0, -1):
         t_val = int(step * config.T / n_steps)
@@ -169,8 +172,11 @@ def sample(
         logits = model(x_t.unsqueeze(0), t_tensor).squeeze(0)   # (L, V)
 
         # How many tokens should be unmasked by the end of this step?
+        # `initial_unmasked` offsets the prompt context tokens so that
+        # `target_unmasked` matches the total visible count tracked inside
+        # `unmask_step` (which counts ALL non-mask positions).
         fraction_done = 1.0 - (step - 1) / n_steps
-        target_unmasked = round(total_mask * fraction_done)
+        target_unmasked = initial_unmasked + round(total_mask * fraction_done)
 
         x_t = unmask_step(x_t, logits, target_unmasked, config.mask_token_id, temperature, top_k)
 
