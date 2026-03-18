@@ -5,6 +5,7 @@ Usage:
     python train.py [--config base|large] [--dataset wikitext-2|wikitext-103]
                     [--epochs N] [--batch-size N] [--lr LR] [--resume PATH]
                     [--webhook URL] [--notify-every N]
+                    [--no-compile] [--no-amp]
 
 Device priority: CUDA > MPS (M4) > CPU
 
@@ -15,6 +16,10 @@ LR schedule:
 Early stopping:
     config.early_stopping_patience > 0 → halt when val_loss has not improved
     for that many consecutive epochs.
+
+Efficiency flags (all enabled by default on CUDA):
+    --no-compile  Disable torch.compile (useful for debugging)
+    --no-amp      Disable AMP / BF16 mixed precision
 
 Discord 通知:
     --webhook オプション、または環境変数 DISCORD_WEBHOOK_URL で指定。
@@ -54,6 +59,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resume",       type=str,   default=None, help="Checkpoint path to resume from")
     p.add_argument("--webhook",      type=str,   default=None, help="Discord Webhook URL")
     p.add_argument("--notify-every", type=int,   default=10,   help="Discord 通知間隔（エポック数）")
+    p.add_argument("--no-compile",   action="store_true", help="Disable torch.compile")
+    p.add_argument("--no-amp",       action="store_true", help="Disable AMP mixed precision")
     return p.parse_args()
 
 
@@ -126,7 +133,14 @@ def compute_mask_rate(t: torch.Tensor, T: int, schedule: str) -> torch.Tensor:
 
 
 @torch.no_grad()
-def evaluate(model: DiffusionLM, loader, config: ModelConfig, device: torch.device) -> float:
+def evaluate(
+    model: DiffusionLM,
+    loader,
+    config: ModelConfig,
+    device: torch.device,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+) -> float:
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -137,9 +151,10 @@ def evaluate(model: DiffusionLM, loader, config: ModelConfig, device: torch.devi
         t = torch.randint(1, config.T + 1, (B,), device=device)
         mask_rate = compute_mask_rate(t, config.T, schedule)
         x_t, is_mask = apply_mask(x_0, mask_rate, config.mask_token_id)
-        logits = model(x_t, t)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            logits = model(x_t, t)
         if is_mask.any():
-            loss = F.cross_entropy(logits[is_mask], x_0[is_mask])
+            loss = F.cross_entropy(logits[is_mask].float(), x_0[is_mask])
             total_loss += loss.item()
         n_batches += 1
     model.train()
@@ -166,6 +181,17 @@ def train() -> None:
     print(f"Device: {device}")
     print(f"Config: {config}")
 
+    # ── AMP (Automatic Mixed Precision) ──────────────────────────────────────
+    # BF16 preferred on Ampere+ (RTX 3070 Ti); FP16 on older GPUs; disabled on MPS/CPU
+    use_amp = (not args.no_amp) and (device.type == "cuda")
+    if use_amp:
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        scaler = torch.cuda.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+    else:
+        amp_dtype = torch.float32
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+    print(f"AMP: {'enabled (' + str(amp_dtype) + ')' if use_amp else 'disabled'}")
+
     # ── Notifier ──
     notifier = Notifier(args.webhook)
 
@@ -173,6 +199,13 @@ def train() -> None:
     model = DiffusionLM(config).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_params:,}")
+
+    # ── torch.compile ─────────────────────────────────────────────────────────
+    # Compiles the model graph for faster CUDA kernels (PyTorch 2.0+, CUDA only)
+    use_compile = (not args.no_compile) and (device.type == "cuda") and hasattr(torch, "compile")
+    if use_compile:
+        print("torch.compile: enabled (compiling model…)")
+        model = torch.compile(model)
 
     optimiser = torch.optim.AdamW(
         model.parameters(),
@@ -232,18 +265,21 @@ def train() -> None:
                 mask_rate = compute_mask_rate(t, config.T, schedule)
                 x_t, is_mask = apply_mask(x_0, mask_rate, config.mask_token_id)
 
-                # Model prediction
-                logits = model(x_t, t)          # (B, L, vocab_size)
+                # Model prediction with AMP autocast
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                    logits = model(x_t, t)      # (B, L, vocab_size)
 
-                # Loss only on masked positions
+                # Loss only on masked positions (in FP32 for stability)
                 if not is_mask.any():
                     continue
-                loss = F.cross_entropy(logits[is_mask], x_0[is_mask])
+                loss = F.cross_entropy(logits[is_mask].float(), x_0[is_mask])
 
                 optimiser.zero_grad()
-                loss.backward()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimiser)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-                optimiser.step()
+                scaler.step(optimiser)
+                scaler.update()
                 scheduler.step()
 
                 epoch_loss += loss.item()
@@ -256,7 +292,7 @@ def train() -> None:
                     )
 
             avg_train = epoch_loss / len(train_loader)
-            val_loss  = evaluate(model, val_loader, config, device)
+            val_loss  = evaluate(model, val_loader, config, device, use_amp, amp_dtype)
             elapsed   = time.time() - t0
 
             print(

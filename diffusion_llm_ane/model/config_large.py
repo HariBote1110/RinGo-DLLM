@@ -4,17 +4,18 @@ Larger model configuration for ANE-scale training on WikiText-103.
 Target: ~55M parameters — large enough for ANE throughput to dominate
 the data-transfer overhead, while still trainable on an RTX 3070 Ti (8 GB).
 
-Memory estimate (fp32 training):
-    params: ~55M × 4 bytes = ~220 MB
-    grads:  ~220 MB
+Memory estimate (BF16 AMP training):
+    params: ~55M × 2 bytes = ~110 MB
+    grads:  ~110 MB (BF16)
+    master weights (FP32): ~220 MB
     optimiser (AdamW): ~440 MB
-    activations: ~600 MB (batch_size=64, seq_len=128)
-    total: ~1.5 GB — well within 8 GB VRAM
+    activations: ~300 MB (batch_size=128, seq_len=128, BF16)
+    total: ~1.2 GB — well within 8 GB VRAM
 
 WikiText-103 scale:
     ~103M tokens, ~805K chunks of 128 tokens
-    ~25K batches/epoch at batch_size=32
-    Approx. 70 min/epoch on RTX 3070 Ti
+    ~14K batches/epoch at batch_size=64 (2x larger with AMP)
+    Approx. 35–45 min/epoch on RTX 3070 Ti with AMP + Flash Attention
 """
 
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ class ModelConfigLarge(ModelConfig):
     mask_schedule: str = "cosine"   # smoother masking curve
 
     # ── Training (overrides) ─────────────────────────────────────────────────
-    batch_size: int = 32          # 64 → 32 (VRAM constraint)
+    batch_size: int = 64          # 32 → 64 (AMP で VRAM 半減 → バッチ 2 倍に)
     learning_rate: float = 3e-4   # Higher LR — cosine decay will bring it down
     lr_schedule: str = "cosine"   # Warmup + cosine decay
     lr_min: float = 1e-5          # Floor for cosine decay
