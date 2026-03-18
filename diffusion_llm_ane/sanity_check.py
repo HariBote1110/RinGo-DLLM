@@ -7,13 +7,21 @@ import torch
 
 print(f"Python  : {sys.version.split()[0]}")
 print(f"PyTorch : {torch.__version__}")
-print(f"MPS available: {torch.backends.mps.is_available()}")
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"MPS  available: {torch.backends.mps.is_available()}")
+if torch.cuda.is_available():
+    print(f"Device Name: {torch.cuda.get_device_name(0)}")
 
 from model.config import ModelConfig
 from model.diffusion_lm import DiffusionLM, apply_mask
 
 config = ModelConfig()
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 print(f"Device  : {device}\n")
 
 # ── Model construction ──
