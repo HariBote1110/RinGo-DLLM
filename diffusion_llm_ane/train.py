@@ -200,13 +200,6 @@ def train() -> None:
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_params:,}")
 
-    # ── torch.compile ─────────────────────────────────────────────────────────
-    # Compiles the model graph for faster CUDA kernels (PyTorch 2.0+, CUDA only)
-    use_compile = (not args.no_compile) and (device.type == "cuda") and hasattr(torch, "compile")
-    if use_compile:
-        print("torch.compile: enabled (compiling model…)")
-        model = torch.compile(model)
-
     optimiser = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -235,7 +228,7 @@ def train() -> None:
     patience = getattr(config, "early_stopping_patience", 0)
     schedule = getattr(config, "mask_schedule", "linear")
 
-    # ── Optional resume ──
+    # ── Optional resume (チェックポイントは compile より先にロード) ──
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
@@ -243,6 +236,14 @@ def train() -> None:
         start_epoch = ckpt["epoch"] + 1
         best_val_loss = ckpt.get("val_loss", float("inf"))
         print(f"Resumed from epoch {ckpt['epoch']} (val_loss={best_val_loss:.4f})")
+
+    # ── torch.compile ─────────────────────────────────────────────────────────
+    # チェックポイントロード後に compile することで _orig_mod.* キー衝突を回避
+    # Compiles the model graph for faster CUDA kernels (PyTorch 2.0+, CUDA only)
+    use_compile = (not args.no_compile) and (device.type == "cuda") and hasattr(torch, "compile")
+    if use_compile:
+        print("torch.compile: enabled (compiling model…)")
+        model = torch.compile(model)
 
     # 学習開始通知
     notifier.training_start(n_params, config.num_epochs, device_label(device))
