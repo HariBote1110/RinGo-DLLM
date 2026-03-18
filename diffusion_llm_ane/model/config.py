@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -20,7 +20,12 @@ class ModelConfig:
 
     # ── Diffusion ─────────────────────────────────────────────────────────────
     T: int = 100                  # Diffusion steps during training
-    # Linear masking rate: alpha_t = 1 - t/T  (fraction of unmasked tokens)
+    # Masking schedule: "linear" → mask_rate = t/T
+    #                   "cosine" → mask_rate = (1 - cos(π·t/T)) / 2
+    mask_schedule: str = "linear"
+
+    # ── Dataset ───────────────────────────────────────────────────────────────
+    dataset_name: str = "wikitext-2"   # "wikitext-2" or "wikitext-103"
 
     # ── Training ──────────────────────────────────────────────────────────────
     batch_size: int = 64
@@ -28,7 +33,13 @@ class ModelConfig:
     weight_decay: float = 0.01
     num_epochs: int = 100
     warmup_steps: int = 1_000
+    # LR schedule after warmup: "constant" or "cosine" (decay to lr_min)
+    lr_schedule: str = "constant"
+    lr_min: float = 1e-6           # minimum LR for cosine decay
     grad_clip: float = 1.0
+    # Early stopping: halt when val_loss has not improved for this many epochs
+    # Set to 0 to disable.
+    early_stopping_patience: int = 0
 
     # ── Checkpointing ─────────────────────────────────────────────────────────
     checkpoint_dir: str = "checkpoints"

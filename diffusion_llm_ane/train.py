@@ -2,10 +2,19 @@
 Training script for the Masked Diffusion Language Model.
 
 Usage:
-    python train.py [--epochs N] [--batch-size N] [--lr LR] [--resume PATH]
+    python train.py [--config base|large] [--dataset wikitext-2|wikitext-103]
+                    [--epochs N] [--batch-size N] [--lr LR] [--resume PATH]
                     [--webhook URL] [--notify-every N]
 
 Device priority: CUDA > MPS (M4) > CPU
+
+LR schedule:
+    config.lr_schedule = "constant" → flat after warmup (original behaviour)
+    config.lr_schedule = "cosine"   → cosine decay from peak LR to lr_min
+
+Early stopping:
+    config.early_stopping_patience > 0 → halt when val_loss has not improved
+    for that many consecutive epochs.
 
 Discord 通知:
     --webhook オプション、または環境変数 DISCORD_WEBHOOK_URL で指定。
@@ -15,6 +24,7 @@ Discord 通知:
 from __future__ import annotations
 
 import argparse
+import math
 import time
 import traceback
 from pathlib import Path
@@ -34,7 +44,10 @@ from notify import Notifier
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Diffusion LM")
     p.add_argument("--config",       type=str,   default="base", choices=["base", "large"],
-                   help="Model config: base (13M) or large (85M)")
+                   help="Model config: base (13M) or large (55M)")
+    p.add_argument("--dataset",      type=str,   default=None,
+                   choices=["wikitext-2", "wikitext-103"],
+                   help="Override dataset (default: from config)")
     p.add_argument("--epochs",       type=int,   default=None)
     p.add_argument("--batch-size",   type=int,   default=None)
     p.add_argument("--lr",           type=float, default=None)
@@ -62,28 +75,67 @@ def device_label(device: torch.device) -> str:
     return "CPU"
 
 
-# ── Learning-rate warmup schedule ─────────────────────────────────────────────
+# ── Learning-rate schedule ────────────────────────────────────────────────────
 
-def build_lr_schedule(optimiser: torch.optim.Optimizer, warmup_steps: int):
-    def lr_lambda(step: int) -> float:
-        if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        return 1.0
+def build_lr_schedule(
+    optimiser: torch.optim.Optimizer,
+    config: ModelConfig,
+    total_steps: int,
+):
+    """
+    Build a LambdaLR scheduler.
+
+    "constant": linear warmup then constant at peak LR.
+    "cosine":   linear warmup then cosine decay from peak LR down to lr_min.
+    """
+    warmup_steps = config.warmup_steps
+    lr_min_ratio = config.lr_min / config.learning_rate   # fraction of peak LR
+
+    if config.lr_schedule == "cosine":
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return step / max(1, warmup_steps)
+            # Cosine decay from 1.0 → lr_min_ratio over the remaining steps
+            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return lr_min_ratio + (1.0 - lr_min_ratio) * cosine_decay
+    else:
+        # "constant" — original behaviour
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return step / max(1, warmup_steps)
+            return 1.0
+
     return torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda)
 
 
 # ── Validation loop ───────────────────────────────────────────────────────────
+
+def compute_mask_rate(t: torch.Tensor, T: int, schedule: str) -> torch.Tensor:
+    """
+    Compute per-sample mask rates from diffusion timesteps.
+
+    "linear": mask_rate = t / T
+    "cosine": mask_rate = (1 - cos(π·t/T)) / 2
+              → gentler at t≈0 and t≈T, steeper in the middle
+    """
+    ratio = t.float() / T
+    if schedule == "cosine":
+        return (1.0 - torch.cos(math.pi * ratio)) / 2.0
+    return ratio   # linear (default)
+
 
 @torch.no_grad()
 def evaluate(model: DiffusionLM, loader, config: ModelConfig, device: torch.device) -> float:
     model.eval()
     total_loss = 0.0
     n_batches = 0
+    schedule = getattr(config, "mask_schedule", "linear")
     for batch in loader:
         x_0 = batch.to(device)
         B = x_0.size(0)
         t = torch.randint(1, config.T + 1, (B,), device=device)
-        mask_rate = t.float() / config.T
+        mask_rate = compute_mask_rate(t, config.T, schedule)
         x_t, is_mask = apply_mask(x_0, mask_rate, config.mask_token_id)
         logits = model(x_t, t)
         if is_mask.any():
@@ -107,6 +159,8 @@ def train() -> None:
         config.batch_size = args.batch_size
     if args.lr is not None:
         config.learning_rate = args.lr
+    if args.dataset is not None:
+        config.dataset_name = args.dataset
 
     device = get_device()
     print(f"Device: {device}")
@@ -128,12 +182,15 @@ def train() -> None:
     )
 
     # ── Data ──
-    print("Loading WikiText-2 …")
+    dataset_name = getattr(config, "dataset_name", "wikitext-2")
+    print(f"Loading {dataset_name} …")
     train_loader = get_dataloader("train", config)
     val_loader   = get_dataloader("validation", config)
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
 
-    scheduler = build_lr_schedule(optimiser, config.warmup_steps)
+    # Total training steps — needed for cosine LR decay
+    total_steps = len(train_loader) * config.num_epochs
+    scheduler = build_lr_schedule(optimiser, config, total_steps)
 
     save_dir = Path(config.checkpoint_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +198,9 @@ def train() -> None:
     start_epoch = 0
     global_step = 0
     best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    patience = getattr(config, "early_stopping_patience", 0)
+    schedule = getattr(config, "mask_schedule", "linear")
 
     # ── Optional resume ──
     if args.resume:
@@ -168,8 +228,8 @@ def train() -> None:
                 # Sample diffusion timestep t ~ Uniform(1, T)
                 t = torch.randint(1, config.T + 1, (B,), device=device)
 
-                # Forward diffusion: mask tokens at rate t/T
-                mask_rate = t.float() / config.T
+                # Forward diffusion: mask tokens according to schedule
+                mask_rate = compute_mask_rate(t, config.T, schedule)
                 x_t, is_mask = apply_mask(x_0, mask_rate, config.mask_token_id)
 
                 # Model prediction
@@ -209,6 +269,7 @@ def train() -> None:
             is_best = val_loss < best_val_loss
             if is_best:
                 best_val_loss = val_loss
+                epochs_without_improvement = 0
                 torch.save(
                     {
                         "epoch": epoch,
@@ -220,6 +281,8 @@ def train() -> None:
                     save_dir / "best_model.pt",
                 )
                 print(f"  → Best model saved (val_loss={val_loss:.4f})")
+            else:
+                epochs_without_improvement += 1
 
             # Periodic checkpoint
             if (epoch + 1) % config.save_every_n_epochs == 0:
@@ -244,6 +307,16 @@ def train() -> None:
                     elapsed_s=elapsed,
                     is_best=is_best,
                 )
+
+            # Early stopping
+            if patience > 0 and epochs_without_improvement >= patience:
+                print(
+                    f"Early stopping: val_loss has not improved for "
+                    f"{epochs_without_improvement} epochs. "
+                    f"Best val_loss = {best_val_loss:.4f}"
+                )
+                notifier.training_complete(best_val_loss, epoch + 1)
+                return
 
     except Exception as exc:
         notifier.error(traceback.format_exc())

@@ -228,7 +228,15 @@ def main() -> None:
     tokens = output_ids.cpu().tolist()
     # Remove padding
     tokens = [t for t in tokens if t != config.pad_token_id]
-    decoded = tokeniser.decode(tokens, skip_special_tokens=False)
+
+    # Count remaining masks (should be 0 after full denoising)
+    n_remaining = tokens.count(config.mask_token_id)
+    if n_remaining > 0:
+        print(f"  ⚠ {n_remaining} [MASK] token(s) still unreplaced")
+
+    # skip_special_tokens=True suppresses [CLS], [SEP], [MASK] etc.
+    # so we see only the natural-language output.
+    decoded = tokeniser.decode(tokens, skip_special_tokens=True)
     print(f"\nGenerated ({args.steps} steps):\n{decoded}")
 
 
