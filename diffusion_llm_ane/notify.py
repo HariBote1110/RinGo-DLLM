@@ -57,14 +57,21 @@ class Notifier:
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            self.webhook_url,
+            self.webhook_url.strip(),
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "RinGo-DLLM-Notifier/1.0",
+            },
             method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status in (200, 204)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            print(f"[notify] Discord 送信失敗: HTTP {exc.code} — {body[:200]}")
+            return False
         except urllib.error.URLError as exc:
             print(f"[notify] Discord 送信失敗: {exc}")
             return False
