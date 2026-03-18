@@ -1,0 +1,19 @@
+# Tokenised dataset cache
+.cache/
+
+# Training checkpoints
+checkpoints/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Venv (lives at project root)
+../.venv/
+
+# CoreML artefacts
+*.mlpackage
+*.mlmodel
+
+# macOS
+.DS_Store
