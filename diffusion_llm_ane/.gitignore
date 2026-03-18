@@ -15,5 +15,8 @@ __pycache__/
 *.mlpackage
 *.mlmodel
 
+# Secrets (Webhook URL 等)
+.env
+
 # macOS
 .DS_Store

@@ -13,9 +13,19 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import urllib.request
 import urllib.error
 from datetime import datetime
+
+# .env ファイルから DISCORD_WEBHOOK_URL を読み込む（存在する場合）
+_ENV_FILE = Path(__file__).parent / ".env"
+if _ENV_FILE.exists():
+    for _line in _ENV_FILE.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 
 class Notifier:
