@@ -138,8 +138,8 @@ def export(args: argparse.Namespace) -> None:
         ],
         compute_precision=precision_map[args.precision],
         compute_units=compute_units_map[args.compute_units],
-        # Minimum deployment target: macOS 14 (required for ANE on M-series)
-        minimum_deployment_target=ct.target.macOS14,
+        # Minimum deployment target: macOS 15 (required for INT4 quantisation)
+        minimum_deployment_target=ct.target.macOS15,
     )
 
     # ── Save ──
