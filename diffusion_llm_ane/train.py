@@ -24,6 +24,7 @@ import torch.nn.functional as F
 
 from data.dataset import get_dataloader
 from model.config import ModelConfig
+from model.config_large import ModelConfigLarge
 from model.diffusion_lm import DiffusionLM, apply_mask
 from notify import Notifier
 
@@ -32,6 +33,8 @@ from notify import Notifier
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Diffusion LM")
+    p.add_argument("--config",       type=str,   default="base", choices=["base", "large"],
+                   help="Model config: base (13M) or large (85M)")
     p.add_argument("--epochs",       type=int,   default=None)
     p.add_argument("--batch-size",   type=int,   default=None)
     p.add_argument("--lr",           type=float, default=None)
@@ -95,7 +98,7 @@ def evaluate(model: DiffusionLM, loader, config: ModelConfig, device: torch.devi
 
 def train() -> None:
     args = parse_args()
-    config = ModelConfig()
+    config = ModelConfigLarge() if args.config == "large" else ModelConfig()
 
     # Apply any CLI overrides
     if args.epochs is not None:
