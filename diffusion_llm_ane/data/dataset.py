@@ -47,7 +47,7 @@ class WikiTextDataset(Dataset):
         cache_file = _cache_path(split, config.max_seq_len)
 
         if cache_file.exists():
-            self.chunks = torch.load(cache_file)
+            self.chunks = torch.load(cache_file, weights_only=True)
         else:
             self.chunks = self._build_chunks(split, config.max_seq_len)
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)

@@ -85,7 +85,7 @@ class TraceableModel(torch.nn.Module):
 def export(args: argparse.Namespace) -> None:
     # Load checkpoint
     ckpt_path = Path(args.checkpoint)
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     config: ModelConfig = ckpt["config"]
 
     model = DiffusionLM(config)
