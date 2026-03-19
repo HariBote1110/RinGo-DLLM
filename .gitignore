@@ -1,2 +1,5 @@
 diffusion_llm_ane/checkpoints_wt103/
 diffusion_llm_ane/checkpoints/
+
+# Private documents (not for public repo)
+markdown/dataset-plan.md
