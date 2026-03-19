@@ -10,6 +10,10 @@ Efficiency notes:
 - Flash Attention via F.scaled_dot_product_attention (PyTorch 2.0+)
   Fused kernel: faster + O(L) memory instead of O(L²)
   Falls back to manual attention on older PyTorch / CPU
+- Gradient Checkpointing (TransformerEncoder.use_checkpoint=True)
+  Recomputes activations during backward instead of storing them.
+  Trades ~33% extra compute for significant VRAM reduction,
+  eliminating overflow into slow shared GPU memory.
 """
 
 import math
@@ -17,6 +21,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 # Flash Attention is available in PyTorch >= 2.0
 _FLASH_ATTN = hasattr(F, "scaled_dot_product_attention")
@@ -111,6 +116,7 @@ class TransformerEncoder(nn.Module):
         ffn_dim: int,
         num_layers: int,
         dropout: float = 0.1,
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.layers = nn.ModuleList(
@@ -120,8 +126,14 @@ class TransformerEncoder(nn.Module):
             ]
         )
         self.final_norm = nn.LayerNorm(hidden_dim)
+        # Gradient checkpointing: recompute activations on backward pass
+        # instead of storing them, trading compute for VRAM.
+        self.use_checkpoint = use_checkpoint
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            x = layer(x)
+            if self.use_checkpoint and self.training:
+                x = grad_checkpoint(layer, x, use_reentrant=False)
+            else:
+                x = layer(x)
         return self.final_norm(x)

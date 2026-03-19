@@ -59,8 +59,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resume",       type=str,   default=None, help="Checkpoint path to resume from")
     p.add_argument("--webhook",      type=str,   default=None, help="Discord Webhook URL")
     p.add_argument("--notify-every", type=int,   default=10,   help="Discord 通知間隔（エポック数）")
-    p.add_argument("--no-compile",   action="store_true", help="Disable torch.compile")
-    p.add_argument("--no-amp",       action="store_true", help="Disable AMP mixed precision")
+    p.add_argument("--no-compile",      action="store_true", help="Disable torch.compile")
+    p.add_argument("--no-amp",          action="store_true", help="Disable AMP mixed precision")
+    p.add_argument("--grad-checkpoint", action="store_true",
+                   help="Gradient checkpointing: recompute activations on backward "
+                        "to save VRAM at ~+33%% compute cost")
     return p.parse_args()
 
 
@@ -176,6 +179,8 @@ def train() -> None:
         config.learning_rate = args.lr
     if args.dataset is not None:
         config.dataset_name = args.dataset
+    if args.grad_checkpoint:
+        config.gradient_checkpointing = True
 
     device = get_device()
     print(f"Device: {device}")
@@ -191,6 +196,7 @@ def train() -> None:
         amp_dtype = torch.float32
         scaler = torch.amp.GradScaler("cuda", enabled=False)
     print(f"AMP: {'enabled (' + str(amp_dtype) + ')' if use_amp else 'disabled'}")
+    print(f"Gradient checkpointing: {'enabled' if args.grad_checkpoint else 'disabled'}")
 
     # ── Notifier ──
     notifier = Notifier(args.webhook)

@@ -81,12 +81,14 @@ class DiffusionLM(nn.Module):
         )
 
         # Transformer encoder
+        use_ckpt = getattr(config, "gradient_checkpointing", False)
         self.encoder = TransformerEncoder(
             hidden_dim=config.hidden_dim,
             num_heads=config.num_heads,
             ffn_dim=config.ffn_dim,
             num_layers=config.num_layers,
             dropout=config.dropout,
+            use_checkpoint=use_ckpt,
         )
 
         # Output head: hidden_dim → vocab_size
