@@ -23,6 +23,8 @@ class ModelConfig:
     # Masking schedule: "linear" → mask_rate = t/T
     #                   "cosine" → mask_rate = (1 - cos(π·t/T)) / 2
     mask_schedule: str = "linear"
+    # Full-sequence loss: weight for masked positions (unmasked = 1.0)
+    mask_loss_weight: float = 5.0
 
     # ── Dataset ───────────────────────────────────────────────────────────────
     dataset_name: str = "wikitext-2"   # "wikitext-2" or "wikitext-103"

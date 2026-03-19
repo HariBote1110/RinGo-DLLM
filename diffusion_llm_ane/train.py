@@ -148,6 +148,7 @@ def evaluate(
     total_loss = 0.0
     n_batches = 0
     schedule = getattr(config, "mask_schedule", "linear")
+    mask_w = getattr(config, "mask_loss_weight", 5.0)
     for batch in loader:
         x_0 = batch.to(device)
         B = x_0.size(0)
@@ -156,9 +157,14 @@ def evaluate(
         x_t, is_mask = apply_mask(x_0, mask_rate, config.mask_token_id)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             logits = model(x_t, t)
-        if is_mask.any():
-            loss = F.cross_entropy(logits[is_mask].float(), x_0[is_mask])
-            total_loss += loss.item()
+        weight = torch.where(is_mask, mask_w, 1.0)
+        per_token = F.cross_entropy(
+            logits.float().view(-1, logits.size(-1)),
+            x_0.view(-1),
+            reduction="none",
+        ).view_as(x_0)
+        loss = (per_token * weight).sum() / weight.sum()
+        total_loss += loss.item()
         n_batches += 1
     model.train()
     return total_loss / max(1, n_batches)
@@ -276,10 +282,19 @@ def train() -> None:
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                     logits = model(x_t, t)      # (B, L, vocab_size)
 
-                # Loss only on masked positions (in FP32 for stability)
-                if not is_mask.any():
-                    continue
-                loss = F.cross_entropy(logits[is_mask].float(), x_0[is_mask])
+                # Full-sequence loss with higher weight on masked positions.
+                # All positions contribute gradient, but masked tokens are
+                # weighted more heavily (mask_loss_weight, default 5.0) so
+                # the model still focuses on denoising while also learning
+                # contextual representations at every position.
+                mask_w = getattr(config, "mask_loss_weight", 5.0)
+                weight = torch.where(is_mask, mask_w, 1.0)          # (B, L)
+                per_token = F.cross_entropy(
+                    logits.float().view(-1, logits.size(-1)),        # (B*L, V)
+                    x_0.view(-1),                                    # (B*L,)
+                    reduction="none",
+                ).view_as(x_0)                                       # (B, L)
+                loss = (per_token * weight).sum() / weight.sum()
 
                 optimiser.zero_grad()
                 scaler.scale(loss).backward()

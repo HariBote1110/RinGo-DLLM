@@ -37,13 +37,17 @@ class ModelConfigLarge(ModelConfig):
     # ── Masking schedule ─────────────────────────────────────────────────────
     mask_schedule: str = "cosine"   # smoother masking curve
 
+    # ── Diffusion (overrides) ──────────────────────────────────────────────────
+    T: int = 25                   # 100 → 25: 離散トークンでは少ないステップで十分
+    mask_loss_weight: float = 5.0 # 全位置ロスでのマスク位置の重み
+
     # ── Training (overrides) ─────────────────────────────────────────────────
-    batch_size: int = 64          # 32 → 64 (AMP で VRAM 半減 → バッチ 2 倍に)
-    learning_rate: float = 3e-4   # Higher LR — cosine decay will bring it down
+    batch_size: int = 48          # AMP 有効時に VRAM 8 GB 内で安定動作
+    learning_rate: float = 5e-4   # プラトー脱出のため引き上げ
     lr_schedule: str = "cosine"   # Warmup + cosine decay
     lr_min: float = 1e-5          # Floor for cosine decay
     num_epochs: int = 30          # Fewer epochs; each is ~70 min on RTX 3070 Ti
-    warmup_steps: int = 5_000     # Larger dataset → longer warmup
+    warmup_steps: int = 3_000     # T 削減に合わせて warmup も短縮
     early_stopping_patience: int = 5   # Stop if no improvement for 5 epochs
 
     # ── Checkpointing (overrides) ────────────────────────────────────────────
