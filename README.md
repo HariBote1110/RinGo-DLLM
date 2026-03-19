@@ -74,16 +74,20 @@ Token Embedding (vocab=30,522)
 | PyTorch | 2.6 (CUDA) |
 | データセット | WikiText-103（~103M トークン、WikiText-2 の 50 倍）|
 
-### 学習設定（large config）
+### 学習設定（large config v3 — 最新）
 
 | ハイパーパラメータ | 値 |
 |---|---|
-| バッチサイズ | 64（AMP 有効時） |
+| バッチサイズ | 48（AMP BF16 有効時） |
 | 学習率 | 3e-4（Cosine decay → 1e-5）|
-| Warmup | 5,000 steps |
-| エポック数 | 30（Early stopping: patience=5）|
+| Warmup | 3,000 steps |
+| エポック数 | 30（Early stopping: patience=3）|
 | Grad clip | 1.0 |
 | Optimiser | AdamW (β=0.9, 0.999) |
+| Dropout | 0.2 |
+| Weight decay | 0.05 |
+| 拡散ステップ T | 25 |
+| 損失関数 | 全位置 CE（マスク位置重み 5.0） |
 
 ### 学習の高速化
 
@@ -132,15 +136,25 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 ## 📊 学習結果
 
-### val_loss の推移
+### val_loss の推移（概要）
 
-| モデル | データセット | Epoch | val_loss | 備考 |
-|---|---|---|---|---|
-| 13M (base) | WikiText-2 | ~62 | 7.22 | Epoch 2 でプラトー |
-| 55M (large) | WikiText-2 | 4 | 7.23 | モデル拡大でも改善なし |
-| **55M (large)** | **WikiText-103** | **1** | **7.19** | データ増量で改善 ✅ |
+| モデル | データセット | 設定 | Best Epoch | Best val_loss | 備考 |
+|---|---|---|---|---|---|
+| 13M (base) | WikiText-2 | v1 | ~62 | 7.22 | Epoch 2 でプラトー |
+| 55M (large) | WikiText-2 | v1 | 4 | 7.23 | モデル拡大でも改善なし |
+| 55M (large) | WikiText-103 | v1 | 4 | 7.19 | データ増量で改善 |
+| 55M (large) | WikiText-103 | v2 | 8 | 4.63 | 全位置ロス + T=25 |
+| **55M (large)** | **WikiText-103** | **v3** | **9** | **4.64** | **正則化強化（Best）** |
 
-**プラトーの原因はモデルサイズではなくデータ量**。WikiText-2（~2MB）ではモデルの容量に対してデータが不足していた。
+### 設定バージョンの変遷
+
+| 設定 | 変更点 | 効果 |
+|---|---|---|
+| v1 | マスク位置のみ CE、T=100、LR=1e-4 | val_loss 7.19 で頭打ち |
+| v2 | 全位置ロス（mask_weight=5.0）、T=25、LR=5e-4 | val_loss 4.63 まで改善、ただし過学習発生 |
+| **v3** | dropout=0.2、weight_decay=0.05、LR=3e-4、patience=3 | 過学習を抑制、安定した収束 |
+
+**プラトーの原因はモデルサイズではなくデータ量と損失関数**。WikiText-2 → WikiText-103 への切り替え、および全位置ロスの導入が劇的な改善をもたらした。
 
 ---
 
@@ -192,14 +206,16 @@ python convert/quantise.py
 
 **55M 以上の規模になって初めて ANE の計算能力が転送オーバーヘッドを上回る。**
 
-#### ANE 最適化版（Conv2d 変換 + 量子化）
+#### ANE 最適化版（Conv2d 変換 + 量子化、v3 モデル）
 
-| モデル | Compute | ms/step (T=20) |
-|---|---|---|
-| FP16（Conv2d） | ALL | 1.31 ms |
-| INT8（Conv2d） | ALL | ~1.4 ms |
-| INT4（Conv2d） | ALL | ~1.5 ms |
-| INT4（標準） | CPU_ONLY | 2.68 ms |
+| モデル | Compute | ms/step (T=20) | サイズ |
+|---|---|---|---|
+| FP16（Conv2d） | ALL | 3.03 ms | 106 MB |
+| **INT8（Conv2d）** | **ALL** | **2.27 ms 🏆** | **54 MB** |
+| INT4（Conv2d） | ALL | 2.33 ms | 27 MB |
+| FP16（標準） | ALL | 3.21 ms | 106 MB |
+| INT4（標準） | ALL | 2.48 ms | 27 MB |
+| 全モデル | CPU_ONLY | ~8.6 ms | — |
 
 ---
 
@@ -220,22 +236,35 @@ python convert/benchmark_all.py
 ## 🎲 生成サンプリング（逆拡散）
 
 ```bash
-# 穴埋め生成
+# 穴埋め生成（top-p + 繰り返しペナルティ + 進捗表示）
 python sample.py \
-    --checkpoint checkpoints_wt103/best_model.pt \
+    --checkpoint checkpoints_wt103_v3/best_model.pt \
     --prompt "The [MASK] of the [MASK] was discovered in [MASK]." \
-    --steps 50 --temperature 1.0 --top-k 10
+    --top-p 0.9 --repetition-penalty 1.2 --verbose
 
-# ノイズからの全生成（全 [MASK]）
+# ノイズからの全生成（複数サンプル、シード固定）
 python sample.py \
-    --checkpoint checkpoints_wt103/best_model.pt \
-    --prompt "[MASK] [MASK] ... [MASK]" \
-    --steps 100 --temperature 0.8 --top-k 50
+    --checkpoint checkpoints_wt103_v3/best_model.pt \
+    --num-samples 5 --seed 42 --verbose
+
+# カスタム設定
+python sample.py \
+    --checkpoint checkpoints_wt103_v3/best_model.pt \
+    --steps 25 --temperature 0.8 --top-k 50 --top-p 0.95
 ```
 
-> **注意**: 現時点（学習初期）のモデルはパープレキシティ ~1,300 と高く、
-> 生成テキストは高頻度語（the, of, and...）の羅列になる。
-> 学習が進むにつれて改善される見込み。
+### サンプリングオプション
+
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--steps` | 0（= config.T） | デノイジングステップ数 |
+| `--temperature` | 1.0 | サンプリング温度 |
+| `--top-k` | 0（無効） | Top-k フィルタリング |
+| `--top-p` | 0.0（無効） | Nucleus (top-p) サンプリング |
+| `--repetition-penalty` | 1.2 | 繰り返しペナルティ（1.0 で無効） |
+| `--num-samples` | 1 | 生成サンプル数 |
+| `--seed` | None | 再現性用のランダムシード |
+| `-v`, `--verbose` | False | ステップごとのデノイジング進捗表示 |
 
 ---
 
@@ -296,7 +325,7 @@ diffusion_llm_ane/
 
 | 課題 | 対応策 |
 |---|---|
-| 生成品質の改善 | 学習継続（WikiText-103、30 epochs）|
-| 会話モデル化 | GPT 系 Decoder アーキテクチャに移行を検討 |
+| 生成品質の飛躍的改善 | Qwen 3.5 9B からのロジット蒸留（計画書あり） |
+| 日本語対応 | トークナイザ変更 + Discord チャットログの活用 |
 | torch.compile | ネイティブ Linux 環境（WSL2 外）なら有効化可能 |
 | さらなる ANE 最適化 | シーケンス長 256 以上でより効果的 |
