@@ -9,6 +9,9 @@ datasets>=2.18.0
 # CoreML conversion (Phase 3+)
 coremltools>=8.0
 
+# GUI
+gradio>=4.0.0
+
 # Utilities
 numpy>=1.26.0
 tqdm>=4.66.0
