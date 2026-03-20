@@ -1,5 +1,7 @@
 """
-Larger model configuration for ANE-scale training on WikiText-103.
+Larger model configurations for ANE-scale training.
+
+Includes both English (WikiText-103) and Japanese (Wikipedia-ja) variants.
 
 Target: ~55M parameters — large enough for ANE throughput to dominate
 the data-transfer overhead, while still trainable on an RTX 3070 Ti (8 GB).
@@ -63,3 +65,35 @@ class ModelConfigLarge(ModelConfig):
     # ── Checkpointing (overrides) ────────────────────────────────────────────
     checkpoint_dir: str = "checkpoints_wt103_v3"   # v2 の best を保持するため別ディレクトリ
     save_every_n_epochs: int = 5  # More frequent saves (epochs are expensive)
+
+
+@dataclass
+class ModelConfigLargeJa(ModelConfigLarge):
+    """
+    Japanese variant — tohoku-nlp/bert-base-japanese-v3 tokenizer.
+
+    Vocab size 32,768 is close to BERT's 30,522 (+7.3%), so the embedding
+    table only grows by ~1.2M params.  MeCab-based subword segmentation
+    gives a fertility of ~0.6 tokens/char for Japanese text, meaning 128
+    tokens ≈ 150 characters (1-2 short paragraphs).
+
+    Wikipedia Japanese contains ~0.9-1.5B tokens — roughly 10× WikiText-103.
+    """
+
+    # ── Tokenizer ────────────────────────────────────────────────────────────
+    tokenizer_name: str = "tohoku-nlp/bert-base-japanese-v3"
+
+    # ── Architecture (overrides) ─────────────────────────────────────────────
+    vocab_size: int = 32_768      # bert-base-japanese-v3 vocabulary size
+
+    # ── Special token IDs (bert-base-japanese-v3) ────────────────────────────
+    mask_token_id: int = 4        # [MASK]
+    pad_token_id: int = 0         # [PAD]
+    cls_token_id: int = 2         # [CLS]
+    sep_token_id: int = 3         # [SEP]
+
+    # ── Dataset ──────────────────────────────────────────────────────────────
+    dataset_name: str = "wikipedia-ja"
+
+    # ── Checkpointing ────────────────────────────────────────────────────────
+    checkpoint_dir: str = "checkpoints_ja_v1"

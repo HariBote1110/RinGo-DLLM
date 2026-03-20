@@ -3,6 +3,9 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
+    # ── Tokenizer ────────────────────────────────────────────────────────────
+    tokenizer_name: str = "bert-base-uncased"
+
     # ── Architecture ──────────────────────────────────────────────────────────
     vocab_size: int = 30_522      # BERT vocabulary size
     max_seq_len: int = 128        # Fixed length required for ANE compatibility
@@ -12,7 +15,7 @@ class ModelConfig:
     ffn_dim: int = 1_024
     dropout: float = 0.1
 
-    # ── Special token IDs (BERT defaults) ────────────────────────────────────
+    # ── Special token IDs (BERT bert-base-uncased defaults) ──────────────────
     mask_token_id: int = 103      # [MASK]
     pad_token_id: int = 0         # [PAD]
     cls_token_id: int = 101       # [CLS]

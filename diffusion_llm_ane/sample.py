@@ -299,7 +299,6 @@ def main() -> None:
         print(f"Random seed: {args.seed}")
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    tokeniser = get_tokenizer()
 
     # Load checkpoint
     ckpt_path = Path(args.checkpoint)
@@ -312,6 +311,10 @@ def main() -> None:
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     print(f"Loaded model from {ckpt_path} (epoch {ckpt['epoch']}, val_loss={ckpt['val_loss']:.4f})")
+
+    # Load tokenizer matching the checkpoint's config
+    tokenizer_name = getattr(config, "tokenizer_name", "bert-base-uncased")
+    tokeniser = get_tokenizer(tokenizer_name)
 
     # Auto-select steps from config if not specified
     n_steps = config.T if args.steps == 0 else args.steps

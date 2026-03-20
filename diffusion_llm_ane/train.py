@@ -2,7 +2,7 @@
 Training script for the Masked Diffusion Language Model.
 
 Usage:
-    python train.py [--config base|large] [--dataset wikitext-2|wikitext-103]
+    python train.py [--config base|large|ja-large] [--dataset wikitext-2|wikitext-103|wikipedia-ja]
                     [--epochs N] [--batch-size N] [--lr LR] [--resume PATH]
                     [--webhook URL] [--notify-every N]
                     [--no-compile] [--no-amp]
@@ -39,7 +39,7 @@ import torch.nn.functional as F
 
 from data.dataset import get_dataloader
 from model.config import ModelConfig
-from model.config_large import ModelConfigLarge
+from model.config_large import ModelConfigLarge, ModelConfigLargeJa
 from model.diffusion_lm import DiffusionLM, apply_mask
 from notify import Notifier
 
@@ -48,10 +48,11 @@ from notify import Notifier
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Diffusion LM")
-    p.add_argument("--config",       type=str,   default="base", choices=["base", "large"],
-                   help="Model config: base (13M) or large (55M)")
+    p.add_argument("--config",       type=str,   default="base",
+                   choices=["base", "large", "ja-large"],
+                   help="Model config: base (13M), large (55M EN), ja-large (55M JA)")
     p.add_argument("--dataset",      type=str,   default=None,
-                   choices=["wikitext-2", "wikitext-103"],
+                   choices=["wikitext-2", "wikitext-103", "wikipedia-ja"],
                    help="Override dataset (default: from config)")
     p.add_argument("--epochs",       type=int,   default=None)
     p.add_argument("--batch-size",   type=int,   default=None)
@@ -174,7 +175,12 @@ def evaluate(
 
 def train() -> None:
     args = parse_args()
-    config = ModelConfigLarge() if args.config == "large" else ModelConfig()
+    _CONFIG_MAP = {
+        "base":     ModelConfig,
+        "large":    ModelConfigLarge,
+        "ja-large": ModelConfigLargeJa,
+    }
+    config = _CONFIG_MAP[args.config]()
 
     # Apply any CLI overrides
     if args.epochs is not None:

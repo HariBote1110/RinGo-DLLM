@@ -157,7 +157,7 @@ def export(args: argparse.Namespace) -> None:
         }
     )
     logits = result["logits"]
-    print(f"  Output shape : {logits.shape}")  # Expected: (1, 128, 30522)
+    print(f"  Output shape : {logits.shape}")  # Expected: (1, max_seq_len, vocab_size)
     print(f"  Output dtype : {logits.dtype}")
     print("Conversion succeeded.")
 

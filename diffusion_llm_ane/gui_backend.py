@@ -44,6 +44,7 @@ class InferenceConfig:
     mask_token_id: int = 103
     pad_token_id: int = 0
     T: int = 25
+    tokenizer_name: str = "bert-base-uncased"
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +116,9 @@ class PyTorchBackend(BaseBackend):
             mask_token_id=self._pt_config.mask_token_id,
             pad_token_id=self._pt_config.pad_token_id,
             T=self._pt_config.T,
+            tokenizer_name=getattr(
+                self._pt_config, "tokenizer_name", "bert-base-uncased",
+            ),
         )
 
         from model.diffusion_lm import DiffusionLM
@@ -136,15 +140,9 @@ class PyTorchBackend(BaseBackend):
 # Tokeniser helpers
 # ---------------------------------------------------------------------------
 
-_tokeniser = None
-
-
-def get_shared_tokeniser():
-    """Return a shared BERT tokeniser instance."""
-    global _tokeniser
-    if _tokeniser is None:
-        _tokeniser = get_tokenizer()
-    return _tokeniser
+def get_shared_tokeniser(tokenizer_name: str = "bert-base-uncased"):
+    """Return a shared tokeniser instance (cached per name in data.tokenizer)."""
+    return get_tokenizer(tokenizer_name)
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +173,7 @@ def reverse_diffusion_stream(
     This is the core streaming generator consumed by the Gradio UI.
     """
     cfg = backend.config
-    tokeniser = get_shared_tokeniser()
+    tokeniser = get_shared_tokeniser(cfg.tokenizer_name)
     L = cfg.max_seq_len
 
     if params.seed is not None:
