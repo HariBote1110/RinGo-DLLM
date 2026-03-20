@@ -28,6 +28,7 @@ Dataset selection:
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
 import os
 import unicodedata
 from pathlib import Path
@@ -38,6 +39,9 @@ from torch.utils.data import DataLoader, Dataset
 
 from data.tokenizer import get_tokenizer
 from model.config import ModelConfig
+
+# Use most available CPU cores for parallel tokenisation, leaving 1 spare
+_NUM_PROC = max(1, multiprocessing.cpu_count() - 1)
 
 # Directory for cached tokenised chunks (relative to the project root)
 _CACHE_DIR = Path(__file__).parent.parent / ".cache"
@@ -60,54 +64,74 @@ def _cache_path(
 
 # ── Shared chunking helper ───────────────────────────────────────────────────
 
-def _tokenise_and_chunk(
-    texts,
+def _tokenise_and_chunk_from_hf(
+    hf_dataset,
     tokenizer_name: str,
     max_seq_len: int,
     dataset_label: str,
     split: str,
+    text_column: str = "text",
     *,
     normalise_nfkc: bool = False,
 ) -> torch.Tensor:
-    """Tokenise an iterable of texts and split into fixed-length chunks.
+    """Tokenise a HuggingFace Dataset in parallel and split into fixed-length chunks.
+
+    Uses ``datasets.map(batched=True, num_proc=N)`` for multi-process
+    tokenisation — typically 5-10x faster than sequential encode() calls.
 
     Args:
-        texts:           Iterable yielding plain text strings.
+        hf_dataset:      A HuggingFace ``Dataset`` object.
         tokenizer_name:  HuggingFace tokenizer ID.
         max_seq_len:     Chunk length in tokens.
-        dataset_label:   Label for progress messages (e.g. "wikipedia-ja").
+        dataset_label:   Label for progress messages.
         split:           Data split name (for logging).
-        normalise_nfkc:  Apply Unicode NFKC normalisation (recommended for
-                         Japanese text — converts fullwidth ASCII to halfwidth,
-                         halfwidth katakana to fullwidth, etc.).
+        text_column:     Column containing text (default ``"text"``).
+        normalise_nfkc:  Apply Unicode NFKC normalisation before tokenising.
 
     Returns:
         ``(N, max_seq_len)`` int64 tensor of token chunks.
     """
     tokeniser = get_tokenizer(tokenizer_name)
+    num_proc = min(_NUM_PROC, len(hf_dataset))
+    print(f"  Tokenising {dataset_label} [{split}] with {num_proc} processes …")
 
-    all_ids: list[int] = []
-    for text in texts:
-        text = text.strip()
-        if not text:
-            continue
+    def _tokenise_batch(batch: dict) -> dict:
+        texts = batch[text_column]
         if normalise_nfkc:
-            text = unicodedata.normalize("NFKC", text)
-        ids: list[int] = tokeniser.encode(
-            text,
+            texts = [unicodedata.normalize("NFKC", t) for t in texts]
+        encoded = tokeniser(
+            texts,
             add_special_tokens=False,
             truncation=False,
-            max_length=None,
+            return_attention_mask=False,
         )
-        all_ids.extend(ids)
+        return {"input_ids": encoded["input_ids"]}
+
+    tokenised = hf_dataset.map(
+        _tokenise_batch,
+        batched=True,
+        batch_size=1000,
+        num_proc=num_proc,
+        remove_columns=hf_dataset.column_names,
+        desc=f"Tokenising {dataset_label}",
+    )
+
+    # Flatten all token IDs into a single stream, then chunk
+    all_ids: list[int] = []
+    for row in tokenised:
+        ids = row["input_ids"]
+        if ids:
+            all_ids.extend(ids)
 
     L = max_seq_len
-    chunk_list = [
-        all_ids[i : i + L]
-        for i in range(0, len(all_ids) - L + 1, L)
-    ]
-    print(f"  {dataset_label} [{split}]: {len(chunk_list):,} chunks of {L} tokens")
-    return torch.tensor(chunk_list, dtype=torch.long)   # (N, L)
+    n_chunks = len(all_ids) // L
+    # Truncate to exact multiple of L and reshape
+    flat = torch.tensor(all_ids[: n_chunks * L], dtype=torch.long)
+    chunks = flat.view(n_chunks, L)
+
+    print(f"  {dataset_label} [{split}]: {n_chunks:,} chunks of {L} tokens "
+          f"({len(all_ids):,} tokens total)")
+    return chunks
 
 
 # ── WikiText dataset ─────────────────────────────────────────────────────────
@@ -154,8 +178,8 @@ class WikiTextDataset(Dataset):
         print(f"  Downloading / tokenising {dataset_name} [{split}] …")
         raw = load_dataset("wikitext", hf_config, split=split)
 
-        return _tokenise_and_chunk(
-            (item["text"] for item in raw),
+        return _tokenise_and_chunk_from_hf(
+            raw,
             tokenizer_name=tokenizer_name,
             max_seq_len=max_seq_len,
             dataset_label=dataset_name,
@@ -218,8 +242,8 @@ class WikipediaJaDataset(Dataset):
         else:
             raise ValueError(f"Unknown split: {split!r}")
 
-        return _tokenise_and_chunk(
-            (item["text"] for item in raw),
+        return _tokenise_and_chunk_from_hf(
+            raw,
             tokenizer_name=tokenizer_name,
             max_seq_len=max_seq_len,
             dataset_label="wikipedia-ja",
