@@ -74,11 +74,22 @@ def _tokenise_and_chunk_from_hf(
     text_column: str = "text",
     *,
     normalise_nfkc: bool = False,
-) -> torch.Tensor:
+    mmap_path: Path | None = None,
+) -> torch.Tensor | np.ndarray:
     """Tokenise a HuggingFace Dataset in parallel and split into fixed-length chunks.
 
     Uses ``datasets.map(batched=True, num_proc=N)`` for multi-process
     tokenisation — typically 5-10x faster than sequential encode() calls.
+
+    When ``mmap_path`` is provided, tokens are written directly to a
+    memory-mapped file on disk (``mmap_path``), and a metadata file
+    (``mmap_path.meta.npy``) is saved alongside it.  This avoids holding
+    the full token array in RAM and eliminates the IO spike caused by
+    ``torch.save()`` on large arrays.  A ``(N, max_seq_len)`` numpy
+    memmap view is returned instead of a torch.Tensor.
+
+    When ``mmap_path`` is None, the data is processed in-memory and
+    returned as a ``(N, max_seq_len)`` int32 torch.Tensor.
 
     Args:
         hf_dataset:      A HuggingFace ``Dataset`` object.
@@ -88,9 +99,7 @@ def _tokenise_and_chunk_from_hf(
         split:           Data split name (for logging).
         text_column:     Column containing text (default ``"text"``).
         normalise_nfkc:  Apply Unicode NFKC normalisation before tokenising.
-
-    Returns:
-        ``(N, max_seq_len)`` int64 tensor of token chunks.
+        mmap_path:       If set, write flat tokens here as a raw int32 memmap.
     """
     tokeniser = get_tokenizer(tokenizer_name)
     num_proc = min(_NUM_PROC, len(hf_dataset))
@@ -117,46 +126,55 @@ def _tokenise_and_chunk_from_hf(
         desc=f"Tokenising {dataset_label}",
     )
 
-    # Memory-efficient two-pass flattening via numpy int32.
-    # Python list-of-ints uses ~28 bytes/int → OOM for 1B+ tokens.
-    # numpy int32 uses 4 bytes/int → ~5 GB for 1.3B tokens (manageable).
-
-    # Pass 1: count total tokens
+    # Pass 1: count total tokens (cheap — just reads Arrow metadata lengths)
     print(f"  Counting tokens …")
     total_tokens: int = 0
     for batch in tokenised.iter(batch_size=50_000):
         for ids in batch["input_ids"]:
             total_tokens += len(ids)
 
-    print(f"  Allocating flat array: {total_tokens:,} tokens "
-          f"({total_tokens * 4 / 1e9:.2f} GB as int32) …")
-
-    # Pass 2: fill pre-allocated int32 array
-    flat_np = np.empty(total_tokens, dtype=np.int32)
-    offset = 0
-    for batch in tokenised.iter(batch_size=50_000):
-        for ids in batch["input_ids"]:
-            n = len(ids)
-            if n:
-                flat_np[offset : offset + n] = ids
-                offset += n
-
-    del tokenised   # release Arrow cache from memory before tensor alloc
-
     L = max_seq_len
     n_chunks = total_tokens // L
-    # Store as int32 (4 bytes/token) to halve memory vs int64.
-    # Peak memory = 6.3 GB for 1.58B tokens — safe on 16 GB RAM.
-    # Callers must cast to int64 before passing to nn.Embedding
-    # (handled in __getitem__ of each Dataset class).
-    chunks = torch.from_numpy(
-        flat_np[: n_chunks * L].reshape(n_chunks, L).copy()
-    )   # dtype = torch.int32
-    del flat_np
+    print(f"  {total_tokens:,} tokens → {n_chunks:,} chunks of {L}  "
+          f"({total_tokens * 4 / 1e9:.2f} GB as int32)")
 
-    print(f"  {dataset_label} [{split}]: {n_chunks:,} chunks of {L} tokens "
-          f"({total_tokens:,} tokens total)")
-    return chunks
+    if mmap_path is not None:
+        # ── memmap path: write directly to disk, page-by-page ────────────────
+        # The OS flushes dirty pages gradually, avoiding a large IO spike.
+        # No 6 GB array ever sits entirely in RAM.
+        mmap_path.parent.mkdir(parents=True, exist_ok=True)
+        flat = np.memmap(mmap_path, dtype=np.int32, mode="w+", shape=(total_tokens,))
+        offset = 0
+        for batch in tokenised.iter(batch_size=50_000):
+            for ids in batch["input_ids"]:
+                n = len(ids)
+                if n:
+                    flat[offset : offset + n] = ids
+                    offset += n
+        flat.flush()
+        del tokenised
+
+        # Save shape metadata so we can reconstruct the view on load
+        meta_path = Path(str(mmap_path) + ".meta.npy")
+        np.save(meta_path, np.array([n_chunks, L], dtype=np.int64))
+
+        return flat[: n_chunks * L].reshape(n_chunks, L)   # np.memmap view
+
+    else:
+        # ── in-memory path (small datasets like WikiText) ─────────────────────
+        flat_np = np.empty(total_tokens, dtype=np.int32)
+        offset = 0
+        for batch in tokenised.iter(batch_size=50_000):
+            for ids in batch["input_ids"]:
+                n = len(ids)
+                if n:
+                    flat_np[offset : offset + n] = ids
+                    offset += n
+        del tokenised
+
+        chunks = torch.from_numpy(flat_np[: n_chunks * L].reshape(n_chunks, L).copy())
+        del flat_np
+        return chunks   # torch.Tensor int32
 
 
 # ── WikiText dataset ─────────────────────────────────────────────────────────
@@ -227,32 +245,47 @@ class WikipediaJaDataset(Dataset):
     Uses the ``wikimedia/wikipedia`` dataset on HuggingFace (``20231101.ja``
     config).  Articles are NFKC-normalised to unify fullwidth/halfwidth
     characters before tokenisation.
+
+    Cache format
+    ------------
+    Tokens are stored as a raw int32 memory-mapped file (``*.bin``) to avoid
+    the large IO spike that ``torch.save()`` causes when writing several GB at
+    once.  The OS flushes dirty pages gradually during the fill, so the SSH
+    daemon and other processes remain responsive throughout.
+
+    A tiny companion file (``*.bin.meta.npy``) stores ``[n_chunks, L]`` so the
+    memmap can be reshaped on load without scanning the file.
     """
 
     def __init__(self, split: str, config: ModelConfig) -> None:
         tokenizer_name: str = getattr(
             config, "tokenizer_name", "tohoku-nlp/bert-base-japanese-v3",
         )
-        cache_file = _cache_path(
-            split, config.max_seq_len, "wikipedia-ja", tokenizer_name,
-        )
+        # Derive the memmap path from the same hash key as the .pt path
+        pt_path = _cache_path(split, config.max_seq_len, "wikipedia-ja", tokenizer_name)
+        mmap_path = pt_path.with_suffix(".bin")
+        meta_path = Path(str(mmap_path) + ".meta.npy")
 
-        if cache_file.exists():
-            print(f"  [cache hit] {cache_file.name}")
-            self.chunks = torch.load(cache_file, weights_only=True)
+        if mmap_path.exists() and meta_path.exists():
+            print(f"  [cache hit] {mmap_path.name}")
+            n_chunks, L = np.load(meta_path).tolist()
+            n_chunks, L = int(n_chunks), int(L)
+            flat = np.memmap(mmap_path, dtype=np.int32, mode="r",
+                             shape=(n_chunks * L,))
+            self.chunks: np.ndarray = flat.reshape(n_chunks, L)
         else:
-            self.chunks = self._build_chunks(
-                split, config.max_seq_len, tokenizer_name,
-            )
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            torch.save(self.chunks, cache_file)
+            self.chunks = self._build_chunks(
+                split, config.max_seq_len, tokenizer_name, mmap_path,
+            )
 
     @staticmethod
     def _build_chunks(
         split: str,
         max_seq_len: int,
         tokenizer_name: str,
-    ) -> torch.Tensor:
+        mmap_path: Path,
+    ) -> np.ndarray:
         # Wikipedia does not have a built-in train/validation/test split.
         # Use 99% for training, 1% for validation.
         print(f"  Downloading / tokenising wikipedia-ja [{split}] …")
@@ -275,14 +308,16 @@ class WikipediaJaDataset(Dataset):
             dataset_label="wikipedia-ja",
             split=split,
             normalise_nfkc=True,
+            mmap_path=mmap_path,
         )
 
     def __len__(self) -> int:
         return len(self.chunks)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        # Cache stored as int32 to halve memory; convert to int64 here.
-        return self.chunks[idx].long()
+        # Copy one row (128 int32 values = 512 bytes) and cast to int64.
+        # np.array() copy is needed because memmap slices are not writable.
+        return torch.from_numpy(np.array(self.chunks[idx], dtype=np.int64))
 
 
 # ── Dataset factory ──────────────────────────────────────────────────────────
