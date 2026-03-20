@@ -41,8 +41,10 @@ from torch.utils.data import DataLoader, Dataset
 from data.tokenizer import get_tokenizer
 from model.config import ModelConfig
 
-# Use most available CPU cores for parallel tokenisation, leaving 1 spare
-_NUM_PROC = max(1, multiprocessing.cpu_count() - 1)
+# Parallel tokenisation worker count.
+# MeCab/fugashi loads a large dictionary (~500 MB) per worker.
+# Capping at 8 prevents 19-worker spikes that crash WSL2 under memory pressure.
+_NUM_PROC = min(8, max(1, multiprocessing.cpu_count() - 1))
 
 # Directory for cached tokenised chunks (relative to the project root)
 _CACHE_DIR = Path(__file__).parent.parent / ".cache"
