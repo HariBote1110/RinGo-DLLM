@@ -285,7 +285,7 @@ class WikipediaJaDataset(Dataset):
     # Used to pre-allocate the memmap file (sparse, so disk usage matches
     # what is actually written, not the reservation).
     _APPROX_TRAIN_TOKENS = 1_700_000_000   # safe upper-bound (~1.58B actual)
-    _APPROX_VAL_TOKENS   =    18_000_000   # ~1% of train
+    _APPROX_VAL_TOKENS   =    35_000_000   # ~1% of train; 30M actual + headroom
 
     @staticmethod
     def _build_chunks(
@@ -347,19 +347,22 @@ class WikipediaJaDataset(Dataset):
             )
             buffer.extend(ids)
             if len(buffer) >= WRITE_EVERY:
-                n = len(buffer)
-                flat[offset : offset + n] = buffer
+                n = min(len(buffer), approx_tokens - offset)
+                if n <= 0:
+                    break   # memmap full; safe to stop (only truncates last chunks)
+                flat[offset : offset + n] = buffer[:n]
                 offset += n
-                buffer = []
+                buffer = buffer[n:]
             n_articles += 1
             if n_articles % 100_000 == 0:
                 print(f"    {n_articles:,} articles, {offset:,} tokens written …")
 
         # Flush remaining buffer
         if buffer:
-            n = len(buffer)
-            flat[offset : offset + n] = buffer
-            offset += n
+            n = min(len(buffer), approx_tokens - offset)
+            if n > 0:
+                flat[offset : offset + n] = buffer[:n]
+                offset += n
         flat.flush()
         del flat
 
