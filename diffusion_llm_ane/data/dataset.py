@@ -33,6 +33,7 @@ import os
 import unicodedata
 from pathlib import Path
 
+import numpy as np
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
@@ -116,21 +117,42 @@ def _tokenise_and_chunk_from_hf(
         desc=f"Tokenising {dataset_label}",
     )
 
-    # Flatten all token IDs into a single stream, then chunk
-    all_ids: list[int] = []
-    for row in tokenised:
-        ids = row["input_ids"]
-        if ids:
-            all_ids.extend(ids)
+    # Memory-efficient two-pass flattening via numpy int32.
+    # Python list-of-ints uses ~28 bytes/int → OOM for 1B+ tokens.
+    # numpy int32 uses 4 bytes/int → ~5 GB for 1.3B tokens (manageable).
+
+    # Pass 1: count total tokens
+    print(f"  Counting tokens …")
+    total_tokens: int = 0
+    for batch in tokenised.iter(batch_size=50_000):
+        for ids in batch["input_ids"]:
+            total_tokens += len(ids)
+
+    print(f"  Allocating flat array: {total_tokens:,} tokens "
+          f"({total_tokens * 4 / 1e9:.2f} GB as int32) …")
+
+    # Pass 2: fill pre-allocated int32 array
+    flat_np = np.empty(total_tokens, dtype=np.int32)
+    offset = 0
+    for batch in tokenised.iter(batch_size=50_000):
+        for ids in batch["input_ids"]:
+            n = len(ids)
+            if n:
+                flat_np[offset : offset + n] = ids
+                offset += n
+
+    del tokenised   # release Arrow cache from memory before tensor alloc
 
     L = max_seq_len
-    n_chunks = len(all_ids) // L
-    # Truncate to exact multiple of L and reshape
-    flat = torch.tensor(all_ids[: n_chunks * L], dtype=torch.long)
-    chunks = flat.view(n_chunks, L)
+    n_chunks = total_tokens // L
+    # Reshape int32 array then cast to int64 tensor (avoids double allocation)
+    chunks = torch.from_numpy(
+        flat_np[: n_chunks * L].reshape(n_chunks, L)
+    ).to(torch.long)
+    del flat_np
 
     print(f"  {dataset_label} [{split}]: {n_chunks:,} chunks of {L} tokens "
-          f"({len(all_ids):,} tokens total)")
+          f"({total_tokens:,} tokens total)")
     return chunks
 
 
