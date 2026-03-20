@@ -281,6 +281,12 @@ class WikipediaJaDataset(Dataset):
                 split, config.max_seq_len, tokenizer_name, mmap_path,
             )
 
+    # Approximate token count for Wikipedia-ja train split.
+    # Used to pre-allocate the memmap file (sparse, so disk usage matches
+    # what is actually written, not the reservation).
+    _APPROX_TRAIN_TOKENS = 1_700_000_000   # safe upper-bound (~1.58B actual)
+    _APPROX_VAL_TOKENS   =    18_000_000   # ~1% of train
+
     @staticmethod
     def _build_chunks(
         split: str,
@@ -288,30 +294,89 @@ class WikipediaJaDataset(Dataset):
         tokenizer_name: str,
         mmap_path: Path,
     ) -> np.ndarray:
-        # Wikipedia does not have a built-in train/validation/test split.
-        # Use 99% for training, 1% for validation.
-        print(f"  Downloading / tokenising wikipedia-ja [{split}] …")
-        raw = load_dataset("wikimedia/wikipedia", "20231101.ja", split="train")
+        """Tokenise Wikipedia-ja using streaming mode (no Arrow cache).
 
-        # Deterministic split: use last 1% for validation
-        n_total = len(raw)
-        n_val = max(1, n_total // 100)
-        if split == "train":
-            raw = raw.select(range(n_total - n_val))
-        elif split in ("validation", "test"):
-            raw = raw.select(range(n_total - n_val, n_total))
+        ``streaming=True`` reads Parquet shards lazily from the HuggingFace
+        Hub (or the local Parquet cache) without converting to Arrow format.
+        This avoids the mmap-heavy Arrow files that crash WSL2 when the
+        cache is large or partially corrupted.
+
+        Tokens are written directly to a numpy memmap file in 10M-token
+        batches, so RAM usage is bounded and the OS flushes pages gradually.
+        """
+        # Split semantics:
+        #   validation → first 1% of articles (≈ 13,756 articles)
+        #   train      → everything after
+        N_VAL_ARTICLES = 13_756
+
+        print(f"  Streaming wikipedia-ja [{split}] …")
+        raw = load_dataset(
+            "wikimedia/wikipedia", "20231101.ja",
+            split="train",
+            streaming=True,
+        )
+        if split in ("validation", "test"):
+            articles = raw.take(N_VAL_ARTICLES)
+            approx_tokens = WikipediaJaDataset._APPROX_VAL_TOKENS
+        elif split == "train":
+            articles = raw.skip(N_VAL_ARTICLES)
+            approx_tokens = WikipediaJaDataset._APPROX_TRAIN_TOKENS
         else:
             raise ValueError(f"Unknown split: {split!r}")
 
-        return _tokenise_and_chunk_from_hf(
-            raw,
-            tokenizer_name=tokenizer_name,
-            max_seq_len=max_seq_len,
-            dataset_label="wikipedia-ja",
-            split=split,
-            normalise_nfkc=True,
-            mmap_path=mmap_path,
-        )
+        tokeniser = get_tokenizer(tokenizer_name)
+
+        # Pre-allocate a sparse memmap file.  On Linux ext4, only written
+        # pages consume actual disk space, so the reservation is cheap.
+        mmap_path.parent.mkdir(parents=True, exist_ok=True)
+        flat = np.memmap(mmap_path, dtype=np.int32, mode="w+",
+                         shape=(approx_tokens,))
+
+        WRITE_EVERY = 10_000_000   # flush to memmap every 10M tokens (~40 MB)
+        buffer: list[int] = []
+        offset = 0
+        n_articles = 0
+
+        for article in articles:
+            text = article["text"].strip()
+            if not text:
+                continue
+            text = unicodedata.normalize("NFKC", text)
+            ids: list[int] = tokeniser.encode(
+                text, add_special_tokens=False, truncation=False,
+            )
+            buffer.extend(ids)
+            if len(buffer) >= WRITE_EVERY:
+                n = len(buffer)
+                flat[offset : offset + n] = buffer
+                offset += n
+                buffer = []
+            n_articles += 1
+            if n_articles % 100_000 == 0:
+                print(f"    {n_articles:,} articles, {offset:,} tokens written …")
+
+        # Flush remaining buffer
+        if buffer:
+            n = len(buffer)
+            flat[offset : offset + n] = buffer
+            offset += n
+        flat.flush()
+        del flat
+
+        total_tokens = offset
+        L = max_seq_len
+        n_chunks = total_tokens // L
+
+        meta_path = Path(str(mmap_path) + ".meta.npy")
+        np.save(meta_path, np.array([n_chunks, L], dtype=np.int64))
+
+        print(f"  wikipedia-ja [{split}]: {n_chunks:,} chunks of {L} tokens "
+              f"({total_tokens:,} tokens, {n_articles:,} articles)")
+
+        # Re-open read-only and return the shaped view
+        flat_r = np.memmap(mmap_path, dtype=np.int32, mode="r",
+                           shape=(n_chunks * L,))
+        return flat_r.reshape(n_chunks, L)
 
     def __len__(self) -> int:
         return len(self.chunks)
