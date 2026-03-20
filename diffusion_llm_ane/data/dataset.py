@@ -145,10 +145,13 @@ def _tokenise_and_chunk_from_hf(
 
     L = max_seq_len
     n_chunks = total_tokens // L
-    # Reshape int32 array then cast to int64 tensor (avoids double allocation)
+    # Store as int32 (4 bytes/token) to halve memory vs int64.
+    # Peak memory = 6.3 GB for 1.58B tokens — safe on 16 GB RAM.
+    # Callers must cast to int64 before passing to nn.Embedding
+    # (handled in __getitem__ of each Dataset class).
     chunks = torch.from_numpy(
-        flat_np[: n_chunks * L].reshape(n_chunks, L)
-    ).to(torch.long)
+        flat_np[: n_chunks * L].reshape(n_chunks, L).copy()
+    )   # dtype = torch.int32
     del flat_np
 
     print(f"  {dataset_label} [{split}]: {n_chunks:,} chunks of {L} tokens "
@@ -212,7 +215,8 @@ class WikiTextDataset(Dataset):
         return len(self.chunks)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        return self.chunks[idx]
+        # Cache may be int32 (large datasets) or int64 (legacy); normalise here.
+        return self.chunks[idx].long()
 
 
 # ── Wikipedia Japanese dataset ───────────────────────────────────────────────
@@ -277,7 +281,8 @@ class WikipediaJaDataset(Dataset):
         return len(self.chunks)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        return self.chunks[idx]
+        # Cache stored as int32 to halve memory; convert to int64 here.
+        return self.chunks[idx].long()
 
 
 # ── Dataset factory ──────────────────────────────────────────────────────────
