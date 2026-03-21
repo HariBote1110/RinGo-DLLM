@@ -78,6 +78,12 @@ class ModelConfigLargeJa(ModelConfigLarge):
     tokens ≈ 150 characters (1-2 short paragraphs).
 
     Wikipedia Japanese contains ~0.9-1.5B tokens — roughly 10× WikiText-103.
+
+    Changelog:
+        v1: batch_size=48, lr=3e-4, num_epochs=30  → val 4.55 (Epoch 2)
+            → 中止: 1 epoch ≈ 6.8h, 30 epoch 完走に 8 日超かかるため
+        v2: batch_size=128, lr=5e-4 (sqrt scaling), num_epochs=10
+            → 1 epoch ≈ 3h 見込み, 合計 ~1.5 日に短縮
     """
 
     # ── Tokenizer ────────────────────────────────────────────────────────────
@@ -95,5 +101,11 @@ class ModelConfigLargeJa(ModelConfigLarge):
     # ── Dataset ──────────────────────────────────────────────────────────────
     dataset_name: str = "wikipedia-ja"
 
+    # ── Training (v2 overrides) ───────────────────────────────────────────────
+    batch_size: int = 128         # v2: 48 → 128 (RTX 3070 Ti 8GB に余裕あり)
+    learning_rate: float = 5e-4   # v2: sqrt scaling: 3e-4 × √(128/48) ≈ 5e-4
+    warmup_steps: int = 4_000     # v2: バッチ増加に合わせて若干延長
+    num_epochs: int = 10          # v2: 30 → 10 (15.8B tokens, 55M params に十分)
+
     # ── Checkpointing ────────────────────────────────────────────────────────
-    checkpoint_dir: str = "checkpoints_ja_v1"
+    checkpoint_dir: str = "checkpoints_ja_v2"
