@@ -39,7 +39,7 @@ import torch.nn.functional as F
 
 from data.dataset import get_dataloader
 from model.config import ModelConfig
-from model.config_large import ModelConfigLarge, ModelConfigLargeJa
+from model.config_large import ModelConfigLarge, ModelConfigLargeJa, ModelConfigJa100M
 from model.diffusion_lm import DiffusionLM, apply_mask
 from monitor_server import TrainingMonitor
 from notify import Notifier
@@ -50,8 +50,8 @@ from notify import Notifier
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Diffusion LM")
     p.add_argument("--config",       type=str,   default="base",
-                   choices=["base", "large", "ja-large"],
-                   help="Model config: base (13M), large (55M EN), ja-large (55M JA)")
+                   choices=["base", "large", "ja-large", "ja-100m"],
+                   help="Model config: base (13M), large (55M EN), ja-large (55M JA), ja-100m (~96M JA)")
     p.add_argument("--dataset",      type=str,   default=None,
                    choices=["wikitext-2", "wikitext-103", "wikipedia-ja"],
                    help="Override dataset (default: from config)")
@@ -182,6 +182,7 @@ def train() -> None:
         "base":     ModelConfig,
         "large":    ModelConfigLarge,
         "ja-large": ModelConfigLargeJa,
+        "ja-100m":  ModelConfigJa100M,
     }
     config = _CONFIG_MAP[args.config]()
 

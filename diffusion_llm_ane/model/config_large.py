@@ -109,3 +109,43 @@ class ModelConfigLargeJa(ModelConfigLarge):
 
     # ── Checkpointing ────────────────────────────────────────────────────────
     checkpoint_dir: str = "checkpoints_ja_v2"
+
+
+@dataclass
+class ModelConfigJa100M(ModelConfigLargeJa):
+    """
+    ~96M parameter Japanese MDLM — "100M class" scale-up from 55M.
+
+    Architecture: hidden_dim 512→768, num_heads 8→12, ffn_dim 2048 (kept).
+    Weight tying (token_embed = lm_head) keeps the output projection free.
+
+    Parameter breakdown (BF16 AMP training):
+        token_embed (tied):  32768 × 768             = 25.2M
+        pos_embed:             128 × 768             =  0.1M
+        time_proj (MLP):     768→3072→768            =  4.7M
+        12 × (attn 2.36M + ffn 3.15M)               = 66.1M
+        Total:                                       ≈ 96M
+
+    VRAM estimate (batch_size=128, BF16 AMP):
+        params+grads: ~384 MB
+        AdamW states: ~768 MB
+        activations:  ~450 MB
+        Total:        ~1.6 GB — well within 8 GB
+
+    LR scaled from 55M via √(96/55) ≈ 1.32×: 5e-4 × 1.32 ≈ 6.6e-4 → 6e-4
+    Training time estimate: ~5-6h/epoch × 10 epochs ≈ 2-2.5 days on RTX 3070 Ti
+    """
+
+    # ── Architecture (96M overrides) ─────────────────────────────────────────
+    hidden_dim: int = 768         # 512 → 768  (+50 %)
+    num_heads:  int = 12          # 8 → 12, keeps head_dim=64 (ANE-optimised)
+    ffn_dim:    int = 2_048       # kept (768×2048 ratio ≈ 2.7×)
+    dropout:    float = 0.1       # relax from 0.2; larger model regularises itself
+
+    # ── Training (100M overrides) ─────────────────────────────────────────────
+    learning_rate: float = 6e-4   # sqrt-scaled from 55M's 5e-4: ×√(96/55) ≈ ×1.32
+    warmup_steps:  int = 6_000    # longer warmup for larger model
+    num_epochs:    int = 10       # same epoch budget
+
+    # ── Checkpointing ────────────────────────────────────────────────────────
+    checkpoint_dir: str = "checkpoints_ja_100m"
