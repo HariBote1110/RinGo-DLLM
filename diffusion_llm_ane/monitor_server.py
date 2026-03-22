@@ -36,7 +36,6 @@ Usage in train.py::
 from __future__ import annotations
 
 import asyncio
-import http
 import json
 import os
 import threading
@@ -63,12 +62,13 @@ except Exception:
     _pynvml = None  # type: ignore[assignment]
 
 try:
-    import websockets
-    import websockets.exceptions
-    _HAS_WS = True
+    from aiohttp import web as _web
+    import aiohttp as _aiohttp
+    _HAS_AIOHTTP = True
 except ImportError:
-    _HAS_WS = False
-    websockets = None  # type: ignore[assignment]
+    _HAS_AIOHTTP = False
+    _web = None      # type: ignore[assignment]
+    _aiohttp = None  # type: ignore[assignment]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,9 +80,9 @@ class TrainingMonitor:
     _MAX_HISTORY   = 5_000
 
     def __init__(self, host: str = "0.0.0.0", port: int = 6006) -> None:
-        if not _HAS_WS:
+        if not _HAS_AIOHTTP:
             raise ImportError(
-                "websockets is required.  Install it with:  pip install websockets"
+                "aiohttp is required.  Install it with:  pip install aiohttp"
             )
 
         self._host = host
@@ -91,7 +91,7 @@ class TrainingMonitor:
         self._clients: set = set()
         self._lock = threading.Lock()
 
-        # ── Shared state (read/written from both threads) ─────────────────────
+        # ── Shared state ──────────────────────────────────────────────────────
         self._state: dict[str, Any] = {
             "progress": {
                 "epoch": 0, "total_epochs": 0,
@@ -124,15 +124,15 @@ class TrainingMonitor:
                 "paused": False,
             },
         }
-        self._logs:    deque[str]  = deque(maxlen=self._MAX_LOG_LINES)
-        self._history: list[dict]  = []
+        self._logs:    deque[str] = deque(maxlen=self._MAX_LOG_LINES)
+        self._history: list[dict] = []
 
         # threading.Event: set = running, cleared = paused
         self._paused_event = threading.Event()
         self._paused_event.set()
 
-        self._start_time: float          = time.time()
-        self._step_times: deque[float]   = deque(maxlen=50)
+        self._start_time: float        = time.time()
+        self._step_times: deque[float] = deque(maxlen=50)
 
         # psutil process handle
         self._proc = _psutil.Process(os.getpid()) if _HAS_PSUTIL else None
@@ -146,7 +146,7 @@ class TrainingMonitor:
                 pass
 
         # Cached HTML (built once in start())
-        self._html: bytes = b""
+        self._html: str = ""
 
     # ── Public API (call from the training loop, main thread) ─────────────────
 
@@ -210,13 +210,13 @@ class TrainingMonitor:
         seq     = self._state["config"].get("max_seq_len", 128)
         n_times = len(self._step_times)
         if n_times >= 2:
-            elapsed  = self._step_times[-1] - self._step_times[0]
-            n_steps  = n_times - 1
+            elapsed = self._step_times[-1] - self._step_times[0]
+            n_steps = n_times - 1
             if elapsed > 0 and n_steps > 0:
-                tok_s    = n_steps * bs * seq / elapsed
-                sps      = n_steps / elapsed
+                tok_s     = n_steps * bs * seq / elapsed
+                sps       = n_steps / elapsed
                 remaining = self._state["progress"]["total_steps"] - global_step
-                eta_sec  = remaining / sps if sps > 0 else 0.0
+                eta_sec   = remaining / sps if sps > 0 else 0.0
 
         hw = self._sample_hardware()
 
@@ -260,7 +260,6 @@ class TrainingMonitor:
         """Append a log line and push to all connected clients."""
         with self._lock:
             self._logs.append(line)
-        with self._lock:
             lines = list(self._logs)
         self._schedule(self._broadcast({"type": "logs", "lines": lines}))
 
@@ -283,50 +282,55 @@ class TrainingMonitor:
         loop.run_until_complete(self._run_server())
 
     async def _run_server(self) -> None:
-        html = self._html  # capture for closure
+        html = self._html
 
-        async def process_request(connection, request):
-            """Serve the HTML dashboard for all non-WebSocket paths."""
-            if request.path in ("/", "/index.html"):
-                headers = [
-                    ("Content-Type",   "text/html; charset=utf-8"),
-                    ("Content-Length", str(len(html))),
-                    ("Cache-Control",  "no-cache"),
-                ]
-                return http.HTTPStatus.OK, headers, html
-            # Path "/ws" (and anything else) → proceed with WebSocket upgrade
-            return None
+        async def handle_index(request):
+            return _web.Response(text=html, content_type="text/html", charset="utf-8")
 
-        async with websockets.serve(
-            self._ws_handler,
-            self._host,
-            self._port,
-            process_request=process_request,
-        ):
-            await asyncio.get_event_loop().create_future()  # run forever
+        async def handle_ws(request):
+            ws = _web.WebSocketResponse()
+            await ws.prepare(request)
+            self._clients.add(ws)
+            try:
+                await ws.send_str(json.dumps(
+                    {"type": "init",    "state":  self._snapshot()},
+                    ensure_ascii=False,
+                ))
+                with self._lock:
+                    history_copy = list(self._history)
+                await ws.send_str(json.dumps(
+                    {"type": "history", "points": history_copy},
+                    ensure_ascii=False,
+                ))
+                async for msg in ws:
+                    if msg.type == _aiohttp.WSMsgType.TEXT:
+                        try:
+                            cmd = json.loads(msg.data)
+                            await self._handle_command(cmd, ws)
+                        except Exception:
+                            pass
+                    elif msg.type in (
+                        _aiohttp.WSMsgType.ERROR,
+                        _aiohttp.WSMsgType.CLOSE,
+                    ):
+                        break
+            finally:
+                self._clients.discard(ws)
+            return ws
 
-    async def _ws_handler(self, ws) -> None:
-        self._clients.add(ws)
-        try:
-            # Send the full snapshot and chart history to the newly connected client
-            await _send(ws, {"type": "init",    "state":  self._snapshot()})
-            with self._lock:
-                history_copy = list(self._history)
-            await _send(ws, {"type": "history", "points": history_copy})
+        app = _web.Application()
+        app.router.add_get("/",           handle_index)
+        app.router.add_get("/index.html", handle_index)
+        app.router.add_get("/ws",         handle_ws)
 
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                await self._handle_command(msg)
+        runner = _web.AppRunner(app)
+        await runner.setup()
+        site = _web.TCPSite(runner, self._host, self._port)
+        await site.start()
 
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        finally:
-            self._clients.discard(ws)
+        await asyncio.get_event_loop().create_future()  # run forever
 
-    async def _handle_command(self, msg: dict) -> None:
+    async def _handle_command(self, msg: dict, _ws=None) -> None:
         kind = msg.get("type", "")
         with self._lock:
             if kind == "set_log_level":
@@ -361,7 +365,7 @@ class TrainingMonitor:
         dead: set = set()
         for ws in list(self._clients):
             try:
-                await ws.send(data)
+                await ws.send_str(data)
             except Exception:
                 dead.add(ws)
         self._clients -= dead
@@ -372,17 +376,17 @@ class TrainingMonitor:
         with self._lock:
             logs = list(self._logs)
             snap = {
-                "progress":        dict(self._state["progress"]),
-                "hardware":        dict(self._state["hardware"]),
-                "process":         dict(self._state["process"]),
-                "dataset":         dict(self._state["dataset"]),
-                "config":          dict(self._state["config"]),
+                "progress":         dict(self._state["progress"]),
+                "hardware":         dict(self._state["hardware"]),
+                "process":          dict(self._state["process"]),
+                "dataset":          dict(self._state["dataset"]),
+                "config":           dict(self._state["config"]),
                 "module_resources": list(self._state["module_resources"]),
                 "controls": {
                     **self._state["controls"],
-                    "log_filters":          list(self._state["controls"]["log_filters"]),
-                    "breakpoint_events":    list(self._state["controls"]["breakpoint_events"]),
-                    "available_log_filters":list(self._state["controls"]["available_log_filters"]),
+                    "log_filters":           list(self._state["controls"]["log_filters"]),
+                    "breakpoint_events":     list(self._state["controls"]["breakpoint_events"]),
+                    "available_log_filters": list(self._state["controls"]["available_log_filters"]),
                 },
             }
         snap["logs"] = logs
@@ -403,7 +407,7 @@ class TrainingMonitor:
             "ram_used_mb":  0.0,
         }
 
-        # ── CPU / RAM (psutil) ────────────────────────────────────────────────
+        # ── CPU / RAM ─────────────────────────────────────────────────────────
         if _HAS_PSUTIL:
             vm = _psutil.virtual_memory()
             hw["ram_used_mb"]  = vm.used  / 1_048_576
@@ -416,7 +420,7 @@ class TrainingMonitor:
                 except Exception:
                     pass
 
-        # ── GPU / VRAM / PCIe (pynvml) ────────────────────────────────────────
+        # ── GPU / VRAM / PCIe ─────────────────────────────────────────────────
         if _HAS_NVML and self._nvml_dev is not None:
             try:
                 util = _pynvml.nvmlDeviceGetUtilizationRates(self._nvml_dev)
@@ -436,7 +440,7 @@ class TrainingMonitor:
                 except Exception:
                     pass
 
-                # PCIe throughput — nvmlDeviceGetPcieThroughput returns KB/s on Linux
+                # PCIe throughput — returns KB/s on Linux / WSL2
                 try:
                     tx_kb = _pynvml.nvmlDeviceGetPcieThroughput(
                         self._nvml_dev, _pynvml.NVML_PCIE_UTIL_TX_BYTES
@@ -456,12 +460,7 @@ class TrainingMonitor:
 
     # ── HTML builder ──────────────────────────────────────────────────────────
 
-    def _build_html(self) -> bytes:
-        """
-        Read index.html and app.js from the repository root, inline the JS
-        (replacing /* __APP_JS_PLACEHOLDER__ */), adapt the title, and return
-        the result as UTF-8 bytes.
-        """
+    def _build_html(self) -> str:
         base_dir  = Path(__file__).parent.parent  # repo root
         html_path = base_dir / "index.html"
         js_path   = base_dir / "app.js"
@@ -469,20 +468,8 @@ class TrainingMonitor:
         html = html_path.read_text(encoding="utf-8")
         js   = js_path.read_text(encoding="utf-8")
 
-        # Inline the JS
         html = html.replace("/* __APP_JS_PLACEHOLDER__ */", js)
-
-        # Brand the title
         html = html.replace("Neko.rs Training Monitor (TDD)", "RinGo-DLLM Training Monitor")
         html = html.replace("Neko.rs Web Dashboard",          "RinGo-DLLM Training Monitor")
 
-        return html.encode("utf-8")
-
-
-# ── Module-level helper ───────────────────────────────────────────────────────
-
-async def _send(ws, msg: dict) -> None:
-    try:
-        await ws.send(json.dumps(msg, ensure_ascii=False))
-    except Exception:
-        pass
+        return html
