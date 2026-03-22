@@ -5,7 +5,7 @@ package coreml
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework CoreML -framework Foundation
+#cgo LDFLAGS: -framework CoreML -framework Foundation -framework Accelerate
 #include "coreml.h"
 #include <stdlib.h>
 */

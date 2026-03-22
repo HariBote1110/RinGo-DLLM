@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RinGo-DLLM Sampler</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f0f1a;
+      --surface:    #1a1a2e;
+      --panel:      #16213e;
+      --border:     #2a2a4a;
+      --accent:     #6c63ff;
+      --accent-dim: #3d3870;
+      --text:       #e0e0f0;
+      --text-dim:   #888;
+      --green:      #4caf50;
+      --blue:       #64b5f6;
+      --radius:     8px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      margin-bottom: 28px;
+      color: #a89ef5;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    /* Full-width rows */
+    .row-full { grid-column: 1 / -1; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+
+    .card-title {
+      font-size: .75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+    }
+
+    /* ---- Prompt ---- */
+    #prompt {
+      width: 100%;
+      min-height: 90px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      padding: 10px 12px;
+      resize: vertical;
+      outline: none;
+      transition: border-color .2s;
+    }
+    #prompt:focus { border-color: var(--accent); }
+
+    .hint {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* ---- Backend radio ---- */
+    .radio-group { display: flex; flex-direction: column; gap: 8px; }
+    .radio-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      transition: background .15s, border-color .15s;
+    }
+    .radio-label:hover { background: var(--panel); }
+    .radio-label input[type="radio"] { accent-color: var(--accent); }
+    .radio-label.checked {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+    }
+
+    /* ---- Sliders ---- */
+    .slider-grid {
+      display: grid;
+      grid-template-columns: 140px 1fr 56px;
+      align-items: center;
+      gap: 8px 12px;
+    }
+
+    .slider-label { font-size: 13px; color: var(--text-dim); }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      border: none;
+    }
+
+    .slider-value {
+      text-align: right;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+
+    /* Seed number input */
+    input[type="number"] {
+      width: 100%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 4px 8px;
+      font-size: 13px;
+      outline: none;
+    }
+    input[type="number"]:focus { border-color: var(--accent); }
+
+    /* ---- Generate button ---- */
+    #btn-generate {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      cursor: pointer;
+      transition: background .2s, opacity .2s;
+    }
+    #btn-generate:hover { background: #7c73ff; }
+    #btn-generate:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* ---- Token display ---- */
+    #token-display {
+      min-height: 80px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      line-height: 1.9;
+      word-break: break-all;
+    }
+
+    .token-mask   { color: #888; }
+    .token-new    { color: #4caf50; font-weight: 600; }
+    .token-prompt { color: #64b5f6; }
+    .token-normal { color: #e0e0e0; }
+
+    /* ---- Status bar ---- */
+    #status {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 8px;
+      min-height: 18px;
+    }
+
+    /* ---- Final output ---- */
+    #output {
+      width: 100%;
+      min-height: 70px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      padding: 10px 12px;
+      resize: vertical;
+      outline: none;
+    }
+
+    /* ---- Progress bar ---- */
+    #progress-bar-wrap {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    #progress-bar {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      transition: width .1s;
+    }
+
+    /* ---- Responsive ---- */
+    @media (max-width: 640px) {
+      .container { grid-template-columns: 1fr; }
+      .row-full  { grid-column: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>RinGo-DLLM Sampler</h1>
+
+<div class="container">
+
+  <!-- Prompt -->
+  <div class="card row-full">
+    <div class="card-title">Prompt</div>
+    <textarea id="prompt" placeholder="The capital of [MASK] is [MASK].">The capital of [MASK] is [MASK].</textarea>
+    <p class="hint">Use <code>[MASK]</code> to mark positions you want the model to fill in. Leave blank to generate freely.</p>
+  </div>
+
+  <!-- Backend -->
+  <div class="card">
+    <div class="card-title">Backend</div>
+    <div class="radio-group" id="backend-group">
+      <label class="radio-label checked">
+        <input type="radio" name="backend" value="CoreML ANE (FP16)" checked />
+        CoreML ANE (FP16)
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="backend" value="CoreML ANE (INT8)" />
+        CoreML ANE (INT8)
+      </label>
+      <label class="radio-label">
+        <input type="radio" name="backend" value="CoreML ANE (INT4)" />
+        CoreML ANE (INT4)
+      </label>
+    </div>
+  </div>
+
+  <!-- Parameters -->
+  <div class="card">
+    <div class="card-title">Parameters</div>
+    <div class="slider-grid">
+
+      <span class="slider-label">Steps</span>
+      <input type="range" id="steps" min="1" max="50" value="25" />
+      <span class="slider-value" id="steps-val">25</span>
+
+      <span class="slider-label">Temperature</span>
+      <input type="range" id="temperature" min="0.1" max="2.0" step="0.05" value="1.0" />
+      <span class="slider-value" id="temperature-val">1.00</span>
+
+      <span class="slider-label">Top-p</span>
+      <input type="range" id="top-p" min="0" max="1" step="0.01" value="0.9" />
+      <span class="slider-value" id="top-p-val">0.90</span>
+
+      <span class="slider-label">Top-k</span>
+      <input type="range" id="top-k" min="0" max="100" step="1" value="0" />
+      <span class="slider-value" id="top-k-val">0</span>
+
+      <span class="slider-label">Rep. penalty</span>
+      <input type="range" id="rep-penalty" min="1.0" max="2.0" step="0.05" value="1.2" />
+      <span class="slider-value" id="rep-penalty-val">1.20</span>
+
+      <span class="slider-label">Seed (−1 = rand)</span>
+      <input type="number" id="seed" min="-1" max="9999" value="-1" style="grid-column:2/4" />
+
+    </div>
+  </div>
+
+  <!-- Generate button -->
+  <div class="card row-full" style="padding:12px 20px">
+    <button id="btn-generate">Generate</button>
+  </div>
+
+  <!-- Token display -->
+  <div class="card row-full">
+    <div class="card-title">Token Stream</div>
+    <div id="token-display"><span style="color:var(--text-dim)">Output will appear here…</span></div>
+    <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+    <div id="status"></div>
+  </div>
+
+  <!-- Final output -->
+  <div class="card row-full">
+    <div class="card-title">Final Output</div>
+    <textarea id="output" readonly placeholder="Generated text will appear here after completion."></textarea>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── Slider live update ─────────────────────────────────────────── */
+  const sliders = [
+    { id: 'steps',       valId: 'steps-val',       fmt: v => String(Math.round(v)) },
+    { id: 'temperature', valId: 'temperature-val', fmt: v => Number(v).toFixed(2)  },
+    { id: 'top-p',       valId: 'top-p-val',       fmt: v => Number(v).toFixed(2)  },
+    { id: 'top-k',       valId: 'top-k-val',       fmt: v => String(Math.round(v)) },
+    { id: 'rep-penalty', valId: 'rep-penalty-val', fmt: v => Number(v).toFixed(2)  },
+  ];
+  sliders.forEach(({ id, valId, fmt }) => {
+    const el  = document.getElementById(id);
+    const out = document.getElementById(valId);
+    el.addEventListener('input', () => { out.textContent = fmt(el.value); });
+  });
+
+  /* ── Radio button highlight ─────────────────────────────────────── */
+  document.getElementById('backend-group').addEventListener('change', e => {
+    document.querySelectorAll('#backend-group .radio-label').forEach(l => {
+      l.classList.toggle('checked', l.querySelector('input') === e.target);
+    });
+  });
+
+  /* ── Helpers ────────────────────────────────────────────────────── */
+  function getBackend() {
+    return document.querySelector('input[name="backend"]:checked').value;
+  }
+
+  function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+  }
+
+  function setProgress(step, nSteps) {
+    const pct = nSteps > 0 ? (step / nSteps) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  /* Render token spans from a StepResult payload */
+  function renderTokens(data) {
+    const { words, tokens, newly_revealed, prompt_positions } = data;
+    if (!words || !tokens) return;
+
+    const newSet    = new Set(newly_revealed  || []);
+    const promptSet = new Set(prompt_positions || []);
+    // Mask token ID 103 (bert-base-uncased [MASK])
+    const MASK_ID = 103;
+
+    const frag = document.createDocumentFragment();
+    words.forEach((word, i) => {
+      const span = document.createElement('span');
+      const id   = tokens[i];
+
+      if (id === MASK_ID) {
+        span.className   = 'token-mask';
+        span.textContent = '_';
+      } else if (newSet.has(i)) {
+        span.className   = 'token-new';
+        span.textContent = word;
+      } else if (promptSet.has(i)) {
+        span.className   = 'token-prompt';
+        span.textContent = word;
+      } else {
+        span.className   = 'token-normal';
+        span.textContent = word;
+      }
+      frag.appendChild(span);
+      // Space between tokens (except sub-word continuations starting with ##)
+      if (!word.startsWith('##') && i < words.length - 1) {
+        const nextWord = words[i + 1];
+        if (!nextWord || !nextWord.startsWith('##')) {
+          frag.appendChild(document.createTextNode(' '));
+        }
+      }
+    });
+
+    const display = document.getElementById('token-display');
+    display.innerHTML = '';
+    display.appendChild(frag);
+  }
+
+  /* Build the final human-readable string from the last StepResult */
+  function buildFinalText(data) {
+    const { words, tokens } = data;
+    if (!words || !tokens) return '';
+    const MASK_ID = 103;
+    const PAD_ID  = 0;
+    const CLS_ID  = 101;
+    const SEP_ID  = 102;
+    const skip    = new Set([MASK_ID, PAD_ID, CLS_ID, SEP_ID]);
+
+    let out = '';
+    words.forEach((word, i) => {
+      const id = tokens[i];
+      if (skip.has(id)) return;
+      if (word.startsWith('##')) {
+        out += word.slice(2);
+      } else {
+        out += (out.length ? ' ' : '') + word;
+      }
+    });
+    return out;
+  }
+
+  /* ── SSE generation ─────────────────────────────────────────────── */
+  let currentAbort = null;
+
+  async function generate() {
+    // Cancel any in-flight request
+    if (currentAbort) { currentAbort.abort(); }
+    const controller = new AbortController();
+    currentAbort     = controller;
+
+    const btn = document.getElementById('btn-generate');
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    document.getElementById('output').value = '';
+    document.getElementById('token-display').innerHTML =
+      '<span style="color:var(--text-dim)">Starting…</span>';
+    setStatus('');
+    setProgress(0, 1);
+
+    const payload = {
+      prompt:             document.getElementById('prompt').value,
+      backend:            getBackend(),
+      steps:              parseInt(document.getElementById('steps').value, 10),
+      temperature:        parseFloat(document.getElementById('temperature').value),
+      top_k:              parseInt(document.getElementById('top-k').value, 10),
+      top_p:              parseFloat(document.getElementById('top-p').value),
+      repetition_penalty: parseFloat(document.getElementById('rep-penalty').value),
+      seed:               parseInt(document.getElementById('seed').value, 10),
+    };
+
+    try {
+      const resp = await fetch('/generate', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+        signal:  controller.signal,
+      });
+
+      if (!resp.ok) {
+        const msg = await resp.text();
+        setStatus('Error ' + resp.status + ': ' + msg.trim());
+        return;
+      }
+
+      const reader  = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buf += decoder.decode(value, { stream: true });
+
+        // Parse SSE chunks: split on double newlines
+        const parts = buf.split('\n\n');
+        buf = parts.pop(); // keep the incomplete tail
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          let data;
+          try { data = JSON.parse(jsonStr); } catch { continue; }
+
+          renderTokens(data);
+          setProgress(data.n_steps - data.step + 1, data.n_steps);
+
+          const ms = data.step_ms != null ? data.step_ms.toFixed(1) : '?';
+          setStatus(
+            'Step ' + (data.n_steps - data.step + 1) + ' / ' + data.n_steps +
+            ' | mask ' + data.mask_remaining + ' / ' + data.total_mask +
+            ' | ' + ms + ' ms/step'
+          );
+
+          if (data.done) {
+            setProgress(1, 1);
+            document.getElementById('output').value = buildFinalText(data);
+            setStatus(
+              'Done — ' + data.n_steps + ' steps | ' +
+              (data.total_ms != null ? data.total_ms.toFixed(0) : '?') + ' ms total'
+            );
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setStatus('Network error: ' + err.message);
+      }
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = 'Generate';
+      currentAbort    = null;
+    }
+  }
+
+  document.getElementById('btn-generate').addEventListener('click', generate);
+})();
+</script>
+</body>
+</html>

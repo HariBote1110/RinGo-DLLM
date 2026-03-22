@@ -1,22 +1,31 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
+#import <Accelerate/Accelerate.h>
 #include <string.h>
 #include "coreml.h"
 
 ModelHandle coreml_load(const char* mlpackage_path) {
     @autoreleasepool {
         NSString* pathStr = [NSString stringWithUTF8String:mlpackage_path];
-        NSURL* url = [NSURL fileURLWithPath:pathStr];
+        NSURL* srcURL = [NSURL fileURLWithPath:pathStr];
+
+        /* Compile the .mlpackage to a temporary .mlmodelc before loading.
+           coremltools does this automatically; we must do it explicitly here. */
+        NSError* error = nil;
+        NSURL* compiledURL = [MLModel compileModelAtURL:srcURL error:&error];
+        if (compiledURL == nil || error != nil) {
+            NSLog(@"[coreml_load] Failed to compile model: %@", error.localizedDescription);
+            return NULL;
+        }
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
         config.computeUnits = MLComputeUnitsAll;
 
-        NSError* error = nil;
-        MLModel* model = [MLModel modelWithContentsOfURL:url
+        MLModel* model = [MLModel modelWithContentsOfURL:compiledURL
                                            configuration:config
                                                    error:&error];
         if (error != nil || model == nil) {
-            NSLog(@"[coreml_load] Failed to load model: %@", error.localizedDescription);
+            NSLog(@"[coreml_load] Failed to load compiled model: %@", error.localizedDescription);
             return NULL;
         }
 
@@ -104,8 +113,14 @@ int coreml_predict(ModelHandle h,
             return -1;
         }
 
-        size_t byteCount = (size_t)seq_len * (size_t)vocab_size * sizeof(float);
-        memcpy(logits_out, logitsArray.dataPointer, byteCount);
+        NSInteger count = (NSInteger)seq_len * vocab_size;
+        NSLog(@"[coreml_predict] logits dataType=%ld count=%ld", (long)logitsArray.dataType, (long)logitsArray.count);
+
+        /* Use element-wise subscript access, which forces transfer to CPU memory
+           regardless of whether the backing store is on ANE, GPU, or CPU. */
+        for (NSInteger i = 0; i < count; i++) {
+            logits_out[i] = [[logitsArray objectAtIndexedSubscript:i] floatValue];
+        }
 
         return 0;
     }
