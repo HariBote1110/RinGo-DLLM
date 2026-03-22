@@ -102,10 +102,12 @@ func Generate(
 			tokens[i] = cfg.MaskID
 		}
 	} else {
-		encoded := tok.Encode(promptText)
+		// Initialise everything to PAD first so positions beyond the
+		// encoded prompt are never treated as masked candidates.
 		for i := range tokens {
-			tokens[i] = cfg.MaskID
+			tokens[i] = cfg.PadID
 		}
+		encoded := tok.Encode(promptText)
 		for i, id := range encoded {
 			if i >= seqLen {
 				break

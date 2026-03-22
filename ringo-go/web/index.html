@@ -375,13 +375,17 @@
 
     const newSet    = new Set(newly_revealed  || []);
     const promptSet = new Set(prompt_positions || []);
-    // Mask token ID 103 (bert-base-uncased [MASK])
+    // Special token IDs (bert-base-uncased)
     const MASK_ID = 103;
+    const PAD_ID  = 0;
 
     const frag = document.createDocumentFragment();
     words.forEach((word, i) => {
+      const id = tokens[i];
+      // Skip padding positions entirely — they are not meaningful content.
+      if (id === PAD_ID) return;
+
       const span = document.createElement('span');
-      const id   = tokens[i];
 
       if (id === MASK_ID) {
         span.className   = 'token-mask';
@@ -399,8 +403,12 @@
       frag.appendChild(span);
       // Space between tokens (except sub-word continuations starting with ##)
       if (!word.startsWith('##') && i < words.length - 1) {
-        const nextWord = words[i + 1];
-        if (!nextWord || !nextWord.startsWith('##')) {
+        // Peek ahead, skipping PAD positions when deciding whether to add a space.
+        let nextNonPad = null;
+        for (let j = i + 1; j < words.length; j++) {
+          if (tokens[j] !== PAD_ID) { nextNonPad = words[j]; break; }
+        }
+        if (nextNonPad && !nextNonPad.startsWith('##')) {
           frag.appendChild(document.createTextNode(' '));
         }
       }
