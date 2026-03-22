@@ -114,12 +114,32 @@ int coreml_predict(ModelHandle h,
         }
 
         NSInteger count = (NSInteger)seq_len * vocab_size;
-        NSLog(@"[coreml_predict] logits dataType=%ld count=%ld", (long)logitsArray.dataType, (long)logitsArray.count);
 
-        /* Use element-wise subscript access, which forces transfer to CPU memory
-           regardless of whether the backing store is on ANE, GPU, or CPU. */
-        for (NSInteger i = 0; i < count; i++) {
-            logits_out[i] = [[logitsArray objectAtIndexedSubscript:i] floatValue];
+        if (logitsArray.dataType == MLMultiArrayDataTypeFloat16) {
+            /* ANE outputs Float16. Convert to Float32 in one SIMD pass via vImage.
+               dataPointer is CPU-accessible — the original SIGSEGV was caused by
+               a buffer overrun (reading 4 bytes per element from a 2-byte buffer),
+               NOT by inaccessible memory. */
+            vImage_Buffer src = {
+                .data     = logitsArray.dataPointer,
+                .height   = 1,
+                .width    = (vImagePixelCount)count,
+                .rowBytes = (size_t)count * sizeof(__fp16),
+            };
+            vImage_Buffer dst = {
+                .data     = logits_out,
+                .height   = 1,
+                .width    = (vImagePixelCount)count,
+                .rowBytes = (size_t)count * sizeof(float),
+            };
+            vImageConvert_Planar16FtoPlanarF(&src, &dst, 0);
+        } else if (logitsArray.dataType == MLMultiArrayDataTypeFloat32) {
+            memcpy(logits_out, logitsArray.dataPointer, (size_t)count * sizeof(float));
+        } else {
+            /* Fallback for Double or other types. */
+            for (NSInteger i = 0; i < count; i++) {
+                logits_out[i] = [[logitsArray objectAtIndexedSubscript:i] floatValue];
+            }
         }
 
         return 0;
