@@ -336,10 +336,22 @@ def train() -> None:
 
                 epoch_loss += loss.item()
                 global_step += 1
+                lr_now     = optimiser.param_groups[0]["lr"]
+                avg_so_far = epoch_loss / (step_idx + 1)
 
+                # モニターは毎ステップ更新（チャートをリアルタイムに）
+                if monitor:
+                    monitor.push_step(
+                        epoch       = epoch + 1,
+                        step        = step_idx + 1,
+                        global_step = global_step,
+                        loss        = loss.item(),
+                        avg_loss    = avg_so_far,
+                        lr          = lr_now,
+                    )
+
+                # コンソールログは 200 ステップごと
                 if global_step % 200 == 0:
-                    lr_now = optimiser.param_groups[0]["lr"]
-                    avg_so_far = epoch_loss / (step_idx + 1)
                     log_line = (
                         f"  step {global_step:6d} | loss {loss.item():.4f} "
                         f"| avg {avg_so_far:.4f} | lr {lr_now:.2e}"
@@ -347,14 +359,6 @@ def train() -> None:
                     print(log_line)
                     if monitor:
                         monitor.push_log(log_line)
-                        monitor.push_step(
-                            epoch      = epoch + 1,
-                            step       = step_idx + 1,
-                            global_step= global_step,
-                            loss       = loss.item(),
-                            avg_loss   = avg_so_far,
-                            lr         = lr_now,
-                        )
 
             avg_train = epoch_loss / len(train_loader)
             val_loss  = evaluate(model, val_loader, config, device, use_amp, amp_dtype)
