@@ -418,19 +418,17 @@ def get_dataloader(split: str, config: ModelConfig) -> DataLoader:
 
     # MPS does not support pin_memory; spawning worker processes can also
     # cause issues with the MPS device context, so use num_workers=0.
-    # On CUDA (e.g. WSL2), use multiple workers to pre-fetch batches and
-    # keep the GPU fed continuously, eliminating utilisation spikes.
+    # On CUDA with a large memmap dataset, num_workers > 0 causes each worker
+    # to map the full ~6.4 GB file into its own address space, exhausting RAM
+    # and causing deadlocks. Keep num_workers=0 for stability.
     using_mps = (os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") is not None
                  or torch.backends.mps.is_available())
-    using_cuda = torch.cuda.is_available() and not using_mps
-    num_workers = 4 if using_cuda else 0
 
     return DataLoader(
         dataset,
         batch_size=config.batch_size,
         shuffle=(split == "train"),
-        num_workers=num_workers,
+        num_workers=0,
         pin_memory=(not using_mps),
-        persistent_workers=(num_workers > 0),  # Keep workers alive between epochs
         drop_last=True,   # Keeps batch size constant — important for ANE shape consistency
     )
