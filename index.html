@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neko.rs Training Monitor (TDD)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0f0f13;
+            --panel: #1a1a24;
+            --panel-alt: #14141c;
+            --border: #2a2a3a;
+            --text: #e0e0e8;
+            --text-sub: #8888a0;
+            --accent: #a78bfa;
+            --accent2: #34d399;
+            --accent3: #fb923c;
+            --red: #f87171;
+            --cyan: #22d3ee;
+            --tab-active: #a78bfa;
+            --tab-hover: rgba(167,139,250,0.15);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel-alt); }
+        .header h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px; }
+        .status { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); transition: background 0.3s; }
+        .dot.on { background: var(--accent2); }
+
+        .tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); background: var(--panel-alt); padding: 0 24px; }
+        .tab-btn { padding: 10px 20px; cursor: pointer; font-size: 0.85rem; color: var(--text-sub); border: none; background: none; border-bottom: 2px solid transparent; transition: all 0.2s; margin-bottom: -2px; }
+        .tab-btn:hover { color: var(--text); background: var(--tab-hover); }
+        .tab-btn.active { color: var(--tab-active); border-bottom-color: var(--tab-active); }
+        .tab-content { display: none; padding: 20px 24px; }
+        .tab-content.active { display: block; }
+
+        .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+        .panel h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-sub); margin-bottom: 14px; }
+        .metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .metric { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; padding: 12px; text-align: center; }
+        .metric .label { font-size: 0.7rem; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .metric .value { font-size: 1.3rem; font-weight: 600; color: var(--accent); }
+        .metric .value.green { color: var(--accent2); }
+        .metric .value.orange { color: var(--accent3); }
+        .metric .value.red { color: var(--red); }
+        .metric .value.cyan { color: var(--cyan); }
+
+        .progress-bar-wrap { background: rgba(255,255,255,0.05); border-radius: 4px; height: 8px; overflow: hidden; margin: 8px 0; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 4px; transition: width 0.5s ease; }
+        .progress-text { font-size: 0.75rem; color: var(--text-sub); text-align: right; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+        th { color: var(--text-sub); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; }
+        td { color: var(--text); }
+        td.mono { font-family: 'Consolas', 'Menlo', monospace; font-size: 0.8rem; }
+        
+        .type-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: bold; margin-bottom: 4px; text-transform: uppercase; }
+        .badge-theoretical { background: rgba(167, 139, 250, 0.2); color: var(--accent); border: 1px solid var(--accent); }
+        .badge-measured { background: rgba(52, 211, 153, 0.2); color: var(--accent2); border: 1px solid var(--accent2); }
+        .badge-estimated { background: rgba(251, 146, 60, 0.2); color: var(--accent3); border: 1px solid var(--accent3); }
+
+        .chart-wrap { position: relative; height: 260px; margin-bottom: 8px; }
+        .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .controls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .controls-grid label { font-size: 0.75rem; color: var(--text-sub); display: block; margin-bottom: 6px; }
+        .controls-grid select, .controls-grid input, .controls-grid textarea {
+            width: 100%; background: var(--panel-alt); border: 1px solid var(--border); color: var(--text);
+            border-radius: 6px; padding: 8px; font-family: inherit; font-size: 0.85rem;
+        }
+        .check-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
+        .check-item { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--text); }
+        .hint { font-size: 0.72rem; color: var(--text-sub); margin-top: 6px; }
+        .btn-row { display: flex; gap: 8px; align-items: center; }
+        .btn { border: 1px solid var(--border); background: var(--panel-alt); color: var(--text); border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+        .logs-panel { height: 240px; overflow: auto; background: #0b0b11; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: Consolas, monospace; font-size: 0.75rem; white-space: pre-wrap; }
+        @media (max-width: 1024px) { .two-col { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🐱 Neko.rs Web Dashboard</h1>
+        <div class="status">
+            <span id="connText">Disconnected</span>
+            <div id="connDot" class="dot"></div>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="training">学習進捗 (実測・推測)</button>
+        <button class="tab-btn" data-tab="hardware">ハードウェア (実測)</button>
+        <button class="tab-btn" data-tab="modules">モジュール詳細 (理論値)</button>
+        <button class="tab-btn" data-tab="config">Configuration</button>
+    </div>
+
+    <!-- 学習進捗タブ -->
+    <div id="tab-training" class="tab-content active">
+        <div class="panel">
+            <h3><span class="type-badge badge-measured">Measured</span> & <span class="type-badge badge-estimated">Estimated</span> 進捗</h3>
+            <div class="metrics-row">
+                <div class="metric"><div class="label">Epoch (Measured)</div><div class="value" id="mEpoch">-</div></div>
+                <div class="metric"><div class="label">Step (Measured)</div><div class="value" id="mStep">-</div></div>
+                <div class="metric"><div class="label">Loss (Measured)</div><div class="value orange" id="mLoss">-</div></div>
+                <div class="metric"><div class="label">LR (Measured)</div><div class="value" id="mLR">-</div></div>
+                <div class="metric"><div class="label">ETA (Estimated)</div><div class="value green" id="mETA">-</div></div>
+            </div>
+            <div class="progress-bar-wrap"><div id="progressFill" class="progress-bar-fill" style="width:0%"></div></div>
+            <div class="progress-text" id="progressText">0 / 0 steps</div>
+        </div>
+        <div class="two-col">
+            <div class="panel">
+                <h3>Loss 推移 <span class="type-badge badge-measured">Measured</span></h3>
+                <div class="chart-wrap"><canvas id="lossChart"></canvas></div>
+            </div>
+            <div class="panel">
+                <h3>スループット <span class="type-badge badge-measured">Measured</span></h3>
+                <div class="chart-wrap"><canvas id="tputChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ハードウェアタブ -->
+    <div id="tab-hardware" class="tab-content">
+        <div class="two-col">
+            <div class="panel">
+                <h3>GPU / VRAM <span class="type-badge badge-measured">Measured</span></h3>
+                <div class="metrics-row">
+                    <div class="metric"><div class="label">GPU (全)</div><div class="value red" id="hGpu">- %</div></div>
+                    <div class="metric"><div class="label">VRAM (全)</div><div class="value cyan" id="hVram">-</div></div>
+                    <div class="metric"><div class="label">VRAM (App)</div><div class="value cyan" id="hVramProc">-</div></div>
+                </div>
+                <p id="vramSemantics" class="hint">VRAM(App) は環境依存で推定表示です。WDDM 等では値が不安定、または取得不可になる場合があります。</p>
+                <div class="chart-wrap"><canvas id="gpuChart"></canvas></div>
+            </div>
+
+            <div class="panel">
+                <h3>CPU / RAM <span class="type-badge badge-measured">Measured</span></h3>
+                <div class="metrics-row">
+                    <div class="metric"><div class="label">CPU (App)</div><div class="value red" id="hCpuProc">- %</div></div>
+                    <div class="metric"><div class="label">RAM (全)</div><div class="value cyan" id="hRam">-</div></div>
+                    <div class="metric"><div class="label">RAM (App)</div><div class="value cyan" id="hRamProc">-</div></div>
+                </div>
+                <div class="chart-wrap"><canvas id="cpuChart"></canvas></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>PCIe 帯域幅 <span class="type-badge badge-measured">Measured</span></h3>
+            <div class="metrics-row">
+                <div class="metric"><div class="label">PCIe TX</div><div class="value orange" id="hTx">- MB/s</div></div>
+                <div class="metric"><div class="label">PCIe RX</div><div class="value orange" id="hRx">- MB/s</div></div>
+            </div>
+            <div class="chart-wrap"><canvas id="pcieChart"></canvas></div>
+        </div>
+    </div>
+
+    <!-- モジュール詳細タブ -->
+    <div id="tab-modules" class="tab-content">
+        <div class="panel">
+            <h3><span class="type-badge badge-theoretical">Theoretical</span> 計算資源使用量（理論値）</h3>
+            <p style="font-size: 0.85rem; color: var(--text-sub); margin-bottom: 16px;">
+                現在の Config およびアーキテクチャ定義（structure-plan.md）から推測される各モジュールのレイヤー全体での理論値リソースです。
+            </p>
+            <table id="moduleTable">
+                <thead>
+                    <tr>
+                        <th>Module Name</th>
+                        <th>FLOPs (Total / Step)</th>
+                        <th>VRAM Resident (MB)</th>
+                        <th>VRAM Activation Peak (MB)</th>
+                        <th>RAM Staged Weight (MB)</th>
+                        <th>PCIe Transfer (MB / Step)</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Configタブ -->
+    <div id="tab-config" class="tab-content">
+        <div class="panel">
+            <h3>Runtime Controls</h3>
+            <div class="controls-grid">
+                <div>
+                    <label for="logLevelSelect">Log Level</label>
+                    <select id="logLevelSelect">
+                        <option value="trace">TRACE</option>
+                        <option value="debug">DEBUG</option>
+                        <option value="info">INFO</option>
+                        <option value="warn">WARN</option>
+                        <option value="error">ERROR</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Log Filters</label>
+                    <div class="check-group" id="logFilterGroup">
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="training" />training</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="model" />model</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="optimizer" />optimizer</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="stream" />stream</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="monitor" />monitor</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="breakpoint" />breakpoint</label>
+                        <label class="check-item"><input type="checkbox" class="log-filter-checkbox" value="device" />device</label>
+                    </div>
+                    <p class="hint">未選択時はフィルタ無し（全カテゴリ）として動作します。</p>
+                </div>
+                <div>
+                    <label for="breakpointInput">Breakpoints (comma separated event names)</label>
+                    <input id="breakpointInput" placeholder="after_optimizer_step,after_epoch_end" />
+                    <p class="hint">例: after_optimizer_step, after_epoch_end</p>
+                </div>
+                <div>
+                    <label>Pause / Resume</label>
+                    <div class="btn-row">
+                        <button id="pauseBtn" class="btn">Pause</button>
+                        <button id="resumeBtn" class="btn">Resume</button>
+                        <span id="pauseState" class="mono">running</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <h3>Realtime Logs</h3>
+            <p id="logsMeta" class="hint">フィルタ: all</p>
+            <div id="logsPanel" class="logs-panel"></div>
+        </div>
+        <div class="panel">
+            <h3>Dataset Metrics</h3>
+            <div class="metrics-row" style="margin-bottom:0">
+                <div class="metric"><div class="label">Samples</div><div class="value cyan" id="dSamples">-</div></div>
+                <div class="metric"><div class="label">Total Tokens</div><div class="value orange" id="dTotalToks">-</div></div>
+                <div class="metric"><div class="label">Valid Tokens</div><div class="value green" id="dValidToks">-</div></div>
+                <div class="metric"><div class="label">Max Seq Len</div><div class="value" id="dSeqLen">-</div></div>
+            </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+            <h3>Config パラメータ</h3>
+            <table id="configTable"><tbody></tbody></table>
+        </div>
+    </div>
+
+    <script>
+    /* __APP_JS_PLACEHOLDER__ */
+    </script>
+</body>
+</html>

@@ -41,6 +41,7 @@ from data.dataset import get_dataloader
 from model.config import ModelConfig
 from model.config_large import ModelConfigLarge, ModelConfigLargeJa
 from model.diffusion_lm import DiffusionLM, apply_mask
+from monitor_server import TrainingMonitor
 from notify import Notifier
 
 
@@ -65,6 +66,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad-checkpoint", action="store_true",
                    help="Gradient checkpointing: recompute activations on backward "
                         "to save VRAM at ~+33%% compute cost")
+    p.add_argument("--no-monitor",   action="store_true", help="Disable the web training monitor")
+    p.add_argument("--monitor-port", type=int, default=6006, help="Training monitor HTTP port (default: 6006)")
     return p.parse_args()
 
 
@@ -263,6 +266,27 @@ def train() -> None:
         print("torch.compile: enabled (compiling model…)")
         model = torch.compile(model)
 
+    # ── Training monitor ──────────────────────────────────────────────────────
+    monitor: TrainingMonitor | None = None
+    if not args.no_monitor:
+        try:
+            monitor = TrainingMonitor(port=args.monitor_port)
+            monitor.configure(
+                config,
+                steps_per_epoch=len(train_loader),
+                total_steps=total_steps,
+                dataset_info={
+                    "total_samples": len(train_loader.dataset),
+                    "total_tokens":  len(train_loader.dataset) * config.max_seq_len,
+                    "valid_tokens":  len(train_loader.dataset) * config.max_seq_len,
+                    "max_seq_len":   config.max_seq_len,
+                },
+            )
+            monitor.start()
+        except Exception as e:
+            print(f"WARNING: training monitor failed to start: {e}")
+            monitor = None
+
     # 学習開始通知
     notifier.training_start(n_params, config.num_epochs, device_label(device))
 
@@ -273,7 +297,7 @@ def train() -> None:
             epoch_loss = 0.0
             t0 = time.time()
 
-            for batch in train_loader:
+            for step_idx, batch in enumerate(train_loader):
                 x_0 = batch.to(device)          # (B, L) original tokens
                 B = x_0.size(0)
 
@@ -315,19 +339,35 @@ def train() -> None:
 
                 if global_step % 200 == 0:
                     lr_now = optimiser.param_groups[0]["lr"]
-                    print(
-                        f"  step {global_step:6d} | loss {loss.item():.4f} | lr {lr_now:.2e}"
+                    avg_so_far = epoch_loss / (step_idx + 1)
+                    log_line = (
+                        f"  step {global_step:6d} | loss {loss.item():.4f} "
+                        f"| avg {avg_so_far:.4f} | lr {lr_now:.2e}"
                     )
+                    print(log_line)
+                    if monitor:
+                        monitor.push_log(log_line)
+                        monitor.push_step(
+                            epoch      = epoch + 1,
+                            step       = step_idx + 1,
+                            global_step= global_step,
+                            loss       = loss.item(),
+                            avg_loss   = avg_so_far,
+                            lr         = lr_now,
+                        )
 
             avg_train = epoch_loss / len(train_loader)
             val_loss  = evaluate(model, val_loader, config, device, use_amp, amp_dtype)
             elapsed   = time.time() - t0
 
-            print(
+            epoch_line = (
                 f"Epoch {epoch + 1:3d}/{config.num_epochs} | "
                 f"train {avg_train:.4f} | val {val_loss:.4f} | "
                 f"{elapsed:.0f}s"
             )
+            print(epoch_line)
+            if monitor:
+                monitor.push_log(epoch_line)
 
             # Save best model
             is_best = val_loss < best_val_loss
