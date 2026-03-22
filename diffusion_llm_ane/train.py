@@ -361,6 +361,46 @@ def train() -> None:
                     if monitor:
                         monitor.push_log(log_line)
 
+                # ── Mid-epoch evaluation (eval_steps > 0) ─────────────────────
+                eval_steps = getattr(config, "eval_steps", 0)
+                if eval_steps > 0 and global_step % eval_steps == 0:
+                    mid_val = evaluate(model, val_loader, config, device, use_amp, amp_dtype)
+                    model.train()
+                    mid_line = (
+                        f"  [mid-epoch] step {global_step:6d} | val {mid_val:.4f}"
+                        + (" ← best" if mid_val < best_val_loss else "")
+                    )
+                    print(mid_line)
+                    if monitor:
+                        monitor.push_log(mid_line)
+
+                    if mid_val < best_val_loss:
+                        best_val_loss = mid_val
+                        epochs_without_improvement = 0
+                        torch.save(
+                            {
+                                "epoch": epoch,
+                                "global_step": global_step,
+                                "model_state_dict": model.state_dict(),
+                                "optimiser_state_dict": optimiser.state_dict(),
+                                "val_loss": mid_val,
+                                "config": config,
+                            },
+                            save_dir / "best_model.pt",
+                        )
+                    # Step checkpoint (always save for easy recovery)
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "global_step": global_step,
+                            "model_state_dict": model.state_dict(),
+                            "optimiser_state_dict": optimiser.state_dict(),
+                            "val_loss": mid_val,
+                            "config": config,
+                        },
+                        save_dir / f"step_{global_step:07d}.pt",
+                    )
+
             avg_train = epoch_loss / len(train_loader)
             val_loss  = evaluate(model, val_loader, config, device, use_amp, amp_dtype)
             elapsed   = time.time() - t0
@@ -382,6 +422,7 @@ def train() -> None:
                 torch.save(
                     {
                         "epoch": epoch,
+                        "global_step": global_step,
                         "model_state_dict": model.state_dict(),
                         "optimiser_state_dict": optimiser.state_dict(),
                         "val_loss": val_loss,
@@ -398,6 +439,7 @@ def train() -> None:
                 torch.save(
                     {
                         "epoch": epoch,
+                        "global_step": global_step,
                         "model_state_dict": model.state_dict(),
                         "optimiser_state_dict": optimiser.state_dict(),
                         "val_loss": val_loss,

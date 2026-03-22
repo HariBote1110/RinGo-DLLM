@@ -49,3 +49,8 @@ class ModelConfig:
     # ── Checkpointing ─────────────────────────────────────────────────────────
     checkpoint_dir: str = "checkpoints"
     save_every_n_epochs: int = 10
+
+    # ── Mid-epoch evaluation ───────────────────────────────────────────────────
+    # eval_steps > 0: run validation + save checkpoint every N global steps
+    # eval_steps = 0: epoch-end only (original behaviour)
+    eval_steps: int = 0

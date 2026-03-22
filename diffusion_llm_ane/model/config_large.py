@@ -147,5 +147,9 @@ class ModelConfigJa100M(ModelConfigLargeJa):
     warmup_steps:  int = 6_000    # longer warmup for larger model
     num_epochs:    int = 10       # same epoch budget
 
+    # ── Mid-epoch evaluation ──────────────────────────────────────────────────
+    # ~10,000 steps ≈ 50-60 min on RTX 3070 Ti → ~10 checkpoints/epoch
+    eval_steps: int = 10_000
+
     # ── Checkpointing ────────────────────────────────────────────────────────
     checkpoint_dir: str = "checkpoints_ja_100m"
