@@ -95,12 +95,18 @@ def build_lr_schedule(
     optimiser: torch.optim.Optimizer,
     config: ModelConfig,
     total_steps: int,
+    last_epoch: int = -1,
 ):
     """
     Build a LambdaLR scheduler.
 
     "constant": linear warmup then constant at peak LR.
     "cosine":   linear warmup then cosine decay from peak LR down to lr_min.
+
+    Pass last_epoch=global_step-1 when resuming so the scheduler fast-forwards
+    to the correct position instead of restarting warmup from zero.
+    LambdaLR calls step() once in __init__, advancing last_epoch by 1, so
+    passing (global_step - 1) results in the LR being computed at global_step.
     """
     warmup_steps = config.warmup_steps
     lr_min_ratio = config.lr_min / config.learning_rate   # fraction of peak LR
@@ -120,7 +126,7 @@ def build_lr_schedule(
                 return step / max(1, warmup_steps)
             return 1.0
 
-    return torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda)
+    return torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda, last_epoch=last_epoch)
 
 
 # ── Validation loop ───────────────────────────────────────────────────────────
@@ -238,7 +244,6 @@ def train() -> None:
 
     # Total training steps — needed for cosine LR decay
     total_steps = len(train_loader) * config.num_epochs
-    scheduler = build_lr_schedule(optimiser, config, total_steps)
 
     save_dir = Path(config.checkpoint_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -265,6 +270,12 @@ def train() -> None:
         global_step  = ckpt.get("global_step", 0)
         best_val_loss = ckpt.get("val_loss", float("inf"))
         print(f"Resumed from epoch {ckpt['epoch']} step {global_step} (val_loss={best_val_loss:.4f})")
+
+    # Scheduler はリジューム後に構築し、global_step 位置まで fast-forward する。
+    # LambdaLR は __init__ で step() を1回呼ぶため last_epoch=global_step-1 を渡すと
+    # 初期化後のステップ番号が global_step に揃う。
+    scheduler = build_lr_schedule(optimiser, config, total_steps, last_epoch=global_step - 1)
+    print(f"LR scheduler ready at step {global_step} (lr={optimiser.param_groups[0]['lr']:.2e})")
 
     # ── torch.compile ─────────────────────────────────────────────────────────
     # チェックポイントロード後に compile することで _orig_mod.* キー衝突を回避
