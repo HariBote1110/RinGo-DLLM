@@ -318,10 +318,44 @@ class TrainingMonitor:
                 self._clients.discard(ws)
             return ws
 
+        checkpoint_dir = Path(self._state["config"].get("checkpoint_dir", "checkpoints"))
+        if not checkpoint_dir.is_absolute():
+            checkpoint_dir = Path(__file__).parent / checkpoint_dir
+
+        async def handle_download(request):
+            """Serve checkpoint / vocab files for easy transfer to Mac."""
+            name = request.match_info["name"]
+            # Only allow safe filenames (no path traversal)
+            if "/" in name or "\\" in name or ".." in name:
+                raise _web.HTTPForbidden()
+            path = checkpoint_dir / name
+            if not path.exists():
+                raise _web.HTTPNotFound()
+            return _web.FileResponse(
+                path,
+                headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            )
+
+        async def handle_files_index(request):
+            """List downloadable files."""
+            if not checkpoint_dir.exists():
+                return _web.Response(text="No checkpoint directory found.", content_type="text/plain")
+            files = sorted(checkpoint_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            items = "".join(
+                f'<li><a href="/files/{f.name}">{f.name}</a>'
+                f' — {f.stat().st_size // 1_048_576} MB</li>'
+                for f in files if f.is_file()
+            )
+            html_body = f"<html><body><h2>Checkpoint files</h2><ul>{items}</ul></body></html>"
+            return _web.Response(text=html_body, content_type="text/html")
+
         app = _web.Application()
-        app.router.add_get("/",           handle_index)
-        app.router.add_get("/index.html", handle_index)
-        app.router.add_get("/ws",         handle_ws)
+        app.router.add_get("/",              handle_index)
+        app.router.add_get("/index.html",    handle_index)
+        app.router.add_get("/ws",            handle_ws)
+        app.router.add_get("/files",         handle_files_index)
+        app.router.add_get("/files/",        handle_files_index)
+        app.router.add_get("/files/{name}",  handle_download)
 
         runner = _web.AppRunner(app)
         await runner.setup()
