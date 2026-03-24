@@ -253,11 +253,18 @@ def train() -> None:
     # ── Optional resume (チェックポイントは compile より先にロード) ──
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
+        # torch.compile が付けた "_orig_mod." プレフィックスを除去
+        raw_state = ckpt["model_state_dict"]
+        state = {
+            (k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v
+            for k, v in raw_state.items()
+        }
+        model.load_state_dict(state)
         optimiser.load_state_dict(ckpt["optimiser_state_dict"])
-        start_epoch = ckpt["epoch"] + 1
+        start_epoch  = ckpt["epoch"] + 1
+        global_step  = ckpt.get("global_step", 0)
         best_val_loss = ckpt.get("val_loss", float("inf"))
-        print(f"Resumed from epoch {ckpt['epoch']} (val_loss={best_val_loss:.4f})")
+        print(f"Resumed from epoch {ckpt['epoch']} step {global_step} (val_loss={best_val_loss:.4f})")
 
     # ── torch.compile ─────────────────────────────────────────────────────────
     # チェックポイントロード後に compile することで _orig_mod.* キー衝突を回避
